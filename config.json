@@ -3,7 +3,12 @@
     {
       "name": "CBC_MAIN",
       "safe_address": "0xb5B95473C08D0046DD8CE1A6D28258E82095f9AF",
-      "telegram_chat_id": "@cbc_liquidity_001"
+      "telegram_chat_id": "@cbc_LM_test"
+    },
+    {
+      "name": "CBC_SECOND",
+      "safe_address": "0xXXXXXXXXXXXXXXXXXXXXXXXX",
+      "telegram_chat_id": "@cbctest2LM"
     }
   ]
 }
