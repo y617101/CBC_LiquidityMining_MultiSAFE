@@ -21,14 +21,21 @@ def send_telegram(text: str, chat_id: str):
         print("Telegram ENV missing: TG_BOT_TOKEN", flush=True)
         return
 
-    if not chat_id:
-        print("Telegram chat_id missing for this SAFE", flush=True)
-        return
-
     url = f"https://api.telegram.org/bot{token}/sendMessage"
-    r = requests.post(url, json={"chat_id": chat_id, "text": text}, timeout=30)
-    print("Telegram status:", r.status_code, flush=True)
-    r.raise_for_status()
+
+    # Telegramは4096文字制限 → 3900で分割
+    s = str(text)
+    chunks = [s[i:i+3900] for i in range(0, len(s), 3900)]
+
+    for i, chunk in enumerate(chunks, 1):
+        r = requests.post(
+            url,
+            json={"chat_id": chat_id, "text": chunk},
+            timeout=30
+        )
+        print(f"Telegram part {i}/{len(chunks)} status:", r.status_code, flush=True)
+        r.raise_for_status()
+
 
 
 def fetch_positions(safe: str, active: bool = True):
@@ -329,16 +336,30 @@ def main():
             continue
 
         try:
-            report = build_daily_report_for_safe(safe)
-            # 見分け用に先頭にNAMEを入れたい場合はここで付ける（任意）
-            # report = f"NAME: {name}\n" + report
-            send_telegram(report, chat_id)
+            report_body = build_daily_report_for_safe(safe)
+
+            header = (
+                "CBC Liquidity Mining — Daily (MULTI)\n"
+                "────────────────\n"
+                f"NAME: {name}\n"
+                f"SAFE: {safe}\n"
+                "STATUS: OK\n\n"
+            )
+
+            full_report = header + report_body
+
+            send_telegram(full_report, chat_id)
+
         except Exception as e:
             print(f"error name={name} safe={safe}: {e}", flush=True)
             try:
-                send_telegram(f"CBC LM ERROR\nNAME: {name}\nSAFE: {safe}\n{e}", chat_id)
+                send_telegram(
+                    f"CBC LM ERROR\nNAME: {name}\nSAFE: {safe}\n{e}",
+                    chat_id
+                )
             except:
                 pass
+
 
 
 if __name__ == "__main__":
