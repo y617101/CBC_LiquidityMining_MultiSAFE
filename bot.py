@@ -334,6 +334,7 @@ def main():
         return
 
     for s in safes:
+        print("DEBUG SAFE CFG:", s, flush=True)
         name = s.get("name") or "NONAME"
         safe = s.get("safe_address")
         chat_id = s.get("telegram_chat_id")
