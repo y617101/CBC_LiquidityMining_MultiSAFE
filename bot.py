@@ -7,7 +7,7 @@ from datetime import datetime, timedelta, timezone
 # Token Symbol Map (Base)
 # ================================
 ADDRESS_SYMBOL_MAP = {
-    "0xb1a76a21769a90ce4fe0edc3dbbae0b9e7689734": "WETH",
+    "0x4200000000000000000000000000000000000006": "WETH",
     "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913": "USDC",
 }
 
