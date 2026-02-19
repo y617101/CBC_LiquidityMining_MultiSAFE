@@ -10,9 +10,6 @@ ADDRESS_SYMBOL_MAP = {
     # Base canonical WETH
     "0x4200000000000000000000000000000000000006": "WETH",
 
-    # もしpositions側でこのアドレス表記が出るケースも吸収（あなたの現MAPにあったやつ）
-    "0xb1a76a21769a90ce4fe0edc3dbbae0b9e7689734": "WETH",
-
     # Base USDC
     "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913": "USDC",
 }
