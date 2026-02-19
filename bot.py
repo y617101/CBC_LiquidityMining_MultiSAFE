@@ -351,7 +351,6 @@ def main():
                 "CBC Liquidity Mining — Daily (MULTI)\n"
                 "────────────────\n"
                 f"NAME: {name}\n"
-                f"SAFE: {safe}\n"
                 "STATUS: OK\n\n"
             )
 
