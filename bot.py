@@ -254,7 +254,7 @@ def load_config():
         return json.load(f)
 
 
-def build_daily_report_for_safe(safe: str):
+def build_daily_report_for_safe(safe, name):
     positions_open = fetch_positions(safe, active=True)
     positions_exited = fetch_positions(safe, active=False)
 
@@ -313,6 +313,7 @@ def build_daily_report_for_safe(safe: str):
         "CBC Liquidity Mining — Daily\n"
         f"Period End: {end_dt.strftime('%Y-%m-%d %H:%M')} JST\n"
         "────────────────\n"
+        f"NAME: {name}\n"
         f"SAFE\n{safe}\n\n"
         f"・24h確定手数料 {fmt_money(fee_usd)}\n"
         f"・Fee APR(SAFE) {fmt_pct(safe_fee_apr)}\n"
@@ -344,7 +345,7 @@ def main():
             continue
 
         try:
-            report_body = build_daily_report_for_safe(safe)
+            report_body = build_daily_report_for_safe(safe, name)
 
             header = (
                 "CBC Liquidity Mining — Daily (MULTI)\n"
