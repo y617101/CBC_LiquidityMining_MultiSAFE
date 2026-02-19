@@ -344,7 +344,7 @@ def main():
             report_body = build_daily_report_for_safe(safe, name)
 
             header = (
-                "CBC Liquidity Mining — Daily (MULTI)\n"
+                
                 "────────────────\n"
             )
 
