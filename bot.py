@@ -347,8 +347,6 @@ def main():
             header = (
                 "CBC Liquidity Mining — Daily (MULTI)\n"
                 "────────────────\n"
-                f"NAME: {name}\n"
-                "STATUS: OK\n\n"
             )
 
             full_report = header + report_body
