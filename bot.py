@@ -310,7 +310,6 @@ def build_daily_report_for_safe(safe, name):
         "CBC Liquidity Mining — Daily\n"
         f"Period End: {end_dt.strftime('%Y-%m-%d %H:%M')} JST\n"
         "────────────────\n"
-        f"NAME: {name}\n"
         f"SAFE\n{safe}\n\n"
         f"・24h確定手数料 {fmt_money(fee_usd)}\n"
         f"・Fee APR(SAFE) {fmt_pct(safe_fee_apr)}\n"
