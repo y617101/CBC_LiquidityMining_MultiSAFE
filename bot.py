@@ -270,22 +270,19 @@ def calc_net_usd(pos):
 # ================================
 # 24h fee calc (Daily existing)
 # ================================
-def calc_fee_usd_24h_from_cash_flows(pos_list_all, now_dt):
-    end_dt = now_dt.replace(hour=9, minute=0, second=0, microsecond=0)
-    if now_dt < end_dt:
-        end_dt -= timedelta(days=1)
-    start_dt = end_dt - timedelta(days=1)
-
+def calc_fee_usd_in_window_from_cash_flows(pos_list_all, start_dt: datetime, end_dt: datetime):
+    """
+    期間窓で「確定手数料USD」を集計（Dailyと同じ拾い方）
+    - type に "fee"/"collect"/"claim" を含むものを対象
+    - amount_usd が無ければ prices×数量 でフォールバック
+    """
     total = 0.0
     total_count = 0
-    fee_by_nft = {}
-    count_by_nft = {}
 
     for pos in (pos_list_all or []):
         if not isinstance(pos, dict):
             continue
 
-        nft_id = str(pos.get("nft_id", "UNKNOWN"))
         cfs = pos.get("cash_flows") or []
         if not isinstance(cfs, list):
             continue
@@ -296,7 +293,7 @@ def calc_fee_usd_24h_from_cash_flows(pos_list_all, now_dt):
 
             t = _lower(cf.get("type"))
 
-            # 現仕様：fees/collect/claim を含むものを対象（維持）
+            # Dailyと同じ判定（ここがキモ）
             if not any(k in t for k in ("fee", "collect", "claim")):
                 continue
 
@@ -310,6 +307,7 @@ def calc_fee_usd_24h_from_cash_flows(pos_list_all, now_dt):
 
             amt_usd = to_f(cf.get("amount_usd"))
 
+            # Dailyと同じフォールバック
             if amt_usd is None:
                 prices = cf.get("prices") or {}
                 p0 = to_f((prices.get("token0") or {}).get("usd")) or 0.0
@@ -342,10 +340,8 @@ def calc_fee_usd_24h_from_cash_flows(pos_list_all, now_dt):
 
             total += amt_usd
             total_count += 1
-            fee_by_nft[nft_id] = fee_by_nft.get(nft_id, 0.0) + amt_usd
-            count_by_nft[nft_id] = count_by_nft.get(nft_id, 0) + 1
 
-    return total, total_count, fee_by_nft, count_by_nft, start_dt, end_dt
+    return total, total_count
 
 # ================================
 # Weekly fee calc (FINAL)
@@ -517,7 +513,7 @@ def build_weekly_report_for_safe(safe: str) -> str:
     pos_list_all.extend(pos_list_open)
     pos_list_all.extend(pos_list_exited)
 
-    fee_7d_usd, tx_7d = calc_fees_usd_in_window_from_cash_flows(
+    fee_7d_usd, tx_7d = calc_fee_usd_in_window_from_cash_flows(pos_list_all, start_dt, end_dt)
         pos_list_all,
         start_dt,
         end_dt,
@@ -545,6 +541,7 @@ def build_weekly_report_for_safe(safe: str) -> str:
         f"・累計確定（All-time） {fmt_money(all_time_fee)}\n"
     )
     return report
+print("DBG weekly fee_7d_usd=", fee_7d_usd, "tx_7d=", tx_7d, flush=True)
 
 # ===============================
 # main
