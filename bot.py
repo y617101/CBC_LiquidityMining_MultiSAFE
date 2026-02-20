@@ -19,22 +19,50 @@ JST = timezone(timedelta(hours=9))
 REVERT_API = "https://api.revert.finance"
 
 
-def send_telegram(text: str, chat_id: str):
-    token = os.environ.get("TG_BOT_TOKEN")
+def send_telegram(text: str, chat_id: str = None):
+    token = os.getenv("TG_BOT_TOKEN")
     if not token:
         print("Telegram ENV missing: TG_BOT_TOKEN", flush=True)
         return
 
+    chat_id = chat_id or os.getenv("TG_CHAT_ID")
+    if not chat_id:
+        print("Telegram ENV missing: TG_CHAT_ID", flush=True)
+        return
+
     url = f"https://api.telegram.org/bot{token}/sendMessage"
 
-    # Telegramは4096文字制限 → 3900で分割
     s = str(text)
-    chunks = [s[i:i+3900] for i in range(0, len(s), 3900)]
+    max_len = 3500
+
+    lines = s.split("\n")
+    chunks = []
+    buf = ""
+
+    for line in lines:
+        candidate = (buf + "\n" + line) if buf else line
+        if len(candidate) > max_len:
+            if buf:
+                chunks.append(buf)
+                buf = line
+            else:
+                chunks.append(line[:max_len])
+                buf = line[max_len:]
+        else:
+            buf = candidate
+
+    if buf:
+        chunks.append(buf)
 
     for i, chunk in enumerate(chunks, 1):
         r = requests.post(
             url,
-            json={"chat_id": chat_id, "text": chunk},
+            json={
+                "chat_id": chat_id,
+                "text": chunk,
+                "parse_mode": "HTML",
+                "disable_web_page_preview": True,
+            },
             timeout=30
         )
         print(f"Telegram part {i}/{len(chunks)} status:", r.status_code, flush=True)
@@ -267,56 +295,58 @@ def build_daily_report_for_safe(safe, name):
     now_dt = datetime.now(JST)
     fee_usd, fee_count, fee_by_nft, count_by_nft, start_dt, end_dt = calc_fee_usd_24h_from_cash_flows(pos_list_all, now_dt)
 
+    # --- NFT blocks (active only) ---
     nft_lines = []
     net_total = 0.0
-    uncollected_total = 0.0
+    unclaimed_total = 0.0  # = fees_value 合算（USD）
 
     for pos in (pos_list_open if isinstance(pos_list_open, list) else []):
         nft_id = str(pos.get("nft_id", "UNKNOWN"))
 
         in_range = pos.get("in_range")
-        status = "ACTIVE" if in_range is not False else "OUT OF RANGE"
+        status = "OUT OF RANGE" if in_range is False else "ACTIVE"
 
-        net = calc_net_usd(pos)
-        if net is not None:
-            net_total += float(net)
+        net = float(calc_net_usd(pos) or 0.0)
+        net_total += net
 
-        fees_value = to_f(pos.get("fees_value"), 0.0)
-        uncollected_total += fees_value
+        # 未Claim（USD）
+        fees_value = float(to_f(pos.get("fees_value"), 0.0) or 0.0)
+        unclaimed_total += fees_value
 
-        u0 = pos.get("uncollected_fees0")
-        u1 = pos.get("uncollected_fees1")
-        sym0 = resolve_symbol(pos, "token0")
-        sym1 = resolve_symbol(pos, "token1")
+        # 24h確定（claimed）このNFT分（USD）
+        fee_usd_nft = float(fee_by_nft.get(str(nft_id), 0.0) or 0.0)
 
-        # ✅ 方式Aを表示（いまのコードはperformanceのfee_aprを表示してたので、ここで統一）
-        fee_usd_nft = fee_by_nft.get(str(nft_id), 0.0)
-        fee_apr_nft = calc_fee_apr_a(fee_usd_nft, net)
+        # NEW APR（NFT）: (24h確定 + 未Claim) / Net * 365
+        nft_apr_base = fee_usd_nft + fees_value
+        nft_fee_apr = calc_fee_apr_a(nft_apr_base, net)
 
+        nft_url = f"https://app.uniswap.org/positions/v3/base/{nft_id}"
+        nft_link = f'<a href="{nft_url}">{nft_id}</a>'
+        
         nft_lines.append(
-            f"\nNFT {nft_id}\n"
+            f"\nNFT {nft_link}\n"
             f"Status: {status}\n"
             f"Net: {fmt_money(net)}\n"
-            f"Uncollected: {fees_value:.2f} USD\n"
-            f"Uncollected Fees:\n"
-            f"{to_f(u0, 0.0):.8f} {sym0}\n"
-            f"{to_f(u1, 0.0):.6f} {sym1}\n"
-            f"Fee APR: {fmt_pct(fee_apr_nft)}\n"
+            f"蓄積手数料（未Claim） {fmt_money(fees_value)}\n"
+            f"Fee APR: {fmt_pct(nft_fee_apr)}\n"
         )
 
-    safe_fee_apr = calc_fee_apr_a(fee_usd, net_total)
+    # --- SAFE APR (NEW) ---
+    apr_base_usd = float(fee_usd or 0.0) + float(unclaimed_total or 0.0)
+    safe_fee_apr = calc_fee_apr_a(apr_base_usd, net_total)
 
+    # --- Report (order you specified) ---
     report = (
         "CBC Liquidity Mining — Daily\n"
         f"Period End: {end_dt.strftime('%Y-%m-%d %H:%M')} JST\n"
         "────────────────\n"
         f"SAFE\n{safe}\n\n"
-        f"・24h確定手数料 {fmt_money(fee_usd)}\n"
-        f"・Fee APR(SAFE) {fmt_pct(safe_fee_apr)}\n"
+        f"・推定総収益（24h＋未Claim） {fmt_money(apr_base_usd)}\n"
+        f"・確定手数料（24h） {fmt_money(fee_usd)}\n"
+        f"・蓄積手数料（未Claim） {fmt_money(unclaimed_total)}\n"
+        f"・Fee APR(SAFE) {fmt_pct(safe_fee_apr)}\n\n"
         f"・Net合算 {fmt_money(net_total)}\n"
-        f"・未回収手数料 {fmt_money(uncollected_total)}\n"
         f"・Transactions {fee_count}\n"
-        f"・Period {start_dt.strftime('%Y-%m-%d %H:%M')} → {end_dt.strftime('%Y-%m-%d %H:%M')} JST\n"
         + "".join(nft_lines)
     )
 
@@ -343,13 +373,8 @@ def main():
         try:
             report_body = build_daily_report_for_safe(safe, name)
 
-            header = (
-                
-                "────────────────\n"
-            )
-
-            full_report = header + report_body
-
+            full_report = report_body
+           
             send_telegram(full_report, chat_id)
 
         except Exception as e:
