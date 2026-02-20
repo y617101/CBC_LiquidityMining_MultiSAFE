@@ -561,7 +561,6 @@ def build_weekly_report_for_safe(safe: str) -> str:
     )
 
     return report
-print("DBG weekly fee_7d_usd=", fee_7d_usd, "tx_7d=", tx_7d, flush=True)
 
 # ===============================
 # main
