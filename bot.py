@@ -346,17 +346,11 @@ def calc_fee_usd_in_window_from_cash_flows(pos_list_all, start_dt: datetime, end
 # ================================
 # Weekly fee calc (FINAL)
 # ================================
-def calc_fees_usd_in_window_from_cash_flows(pos_list_all, start_dt: datetime, end_dt: datetime):
-    """
-    Weekly確定手数料（cash_flowsのtype == 'fees-collected' のUSD合計）
-    """
+def calc_fees_usd_in_window_from_cash_flows(pos_list_all, start_dt, end_dt):
     total = 0.0
-    count = 0
+    total_count = 0
 
     for pos in (pos_list_all or []):
-        if not isinstance(pos, dict):
-            continue
-
         cfs = pos.get("cash_flows") or []
         if not isinstance(cfs, list):
             continue
@@ -365,7 +359,14 @@ def calc_fees_usd_in_window_from_cash_flows(pos_list_all, start_dt: datetime, en
             if not isinstance(cf, dict):
                 continue
 
-            if _lower(cf.get("type")) != "fees-collected":
+            t_raw = cf.get("type")
+            if not t_raw:
+                continue
+
+            t = str(t_raw).strip().lower()
+
+            # ★ ここを厳密に
+            if t not in ("fees-collected", "claimed-fees"):
                 continue
 
             ts = _to_ts_sec(cf.get("timestamp"))
@@ -377,21 +378,29 @@ def calc_fees_usd_in_window_from_cash_flows(pos_list_all, start_dt: datetime, en
                 continue
 
             amt_usd = to_f(cf.get("amount_usd"))
+
             if amt_usd is None:
-                continue
+                prices = cf.get("prices") or {}
+                p0 = to_f((prices.get("token0") or {}).get("usd")) or 0.0
+                p1 = to_f((prices.get("token1") or {}).get("usd")) or 0.0
+
+                q0 = to_f(cf.get("collected_fees_token0")) or 0.0
+                q1 = to_f(cf.get("collected_fees_token1")) or 0.0
+
+                amt_usd = abs(q0) * p0 + abs(q1) * p1
 
             try:
                 amt_usd = float(amt_usd)
             except Exception:
                 continue
 
-            if not (amt_usd > 0):
+            if amt_usd <= 0:
                 continue
 
             total += amt_usd
-            count += 1
+            total_count += 1
 
-    return total, count
+    return total, total_count
 
 def calc_all_time_fees_usd_from_cash_flows(pos_list_all):
     total = 0.0
