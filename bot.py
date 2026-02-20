@@ -518,46 +518,6 @@ def build_weekly_report_for_safe(safe: str) -> str:
     pos_list_all += pos_list_open
     pos_list_all += pos_list_exited
     # --- DEBUG: fees-collected を7日窓で拾えてるか確認（Logs出力のみ） ---
-dbg("DBG weekly window:", start_dt, "->", end_dt)
-
-sample_printed = 0
-fees_in_window = 0
-fees_total = 0
-
-for pos in pos_list_all:
-    cfs = pos.get("cash_flows") or []
-    if not isinstance(cfs, list):
-        continue
-    for cf in cfs:
-        if not isinstance(cf, dict):
-            continue
-        if _lower(cf.get("type")) != "fees-collected":
-            continue
-
-        fees_total += 1
-
-        ts = _to_ts_sec(cf.get("timestamp"))
-        amt = cf.get("amount_usd")
-        if ts is None:
-            continue
-
-        dt = datetime.fromtimestamp(ts, JST)
-        in_window = (start_dt <= dt < end_dt)
-        if in_window:
-            fees_in_window += 1
-
-        # 先頭3件だけサンプル表示
-        if sample_printed < 3:
-            dbg("DBG fee sample:",
-                "dt=", dt,
-                "in_window=", in_window,
-                "amount_usd=", amt,
-                "raw_ts=", cf.get("timestamp")
-            )
-            sample_printed += 1
-
-dbg("DBG fees-collected total:", fees_total)
-dbg("DBG fees-collected in 7d window:", fees_in_window)
 
     # 7d fees-collected
     fee_7d_usd, tx_7d = calc_fees_usd_in_window_from_cash_flows(pos_list_all, start_dt, end_dt)
