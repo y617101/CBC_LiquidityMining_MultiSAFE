@@ -534,19 +534,12 @@ def build_weekly_report_for_safe(safe: str) -> str:
         pos_list_all.extend(pos_list_exited)
 
     fee_7d_usd, tx_7d = calc_fees_usd_in_window_from_cash_flows(pos_list_all, start_dt, end_dt)
-        start_dt,
-        end_dt
-    )
 
-    fee_all_time_usd, _ = calc_fees_usd_in_window_from_cash_flows(
-        pos_list_all,
-        datetime(2000, 1, 1, tzinfo=JST),
-        end_dt
-    )
-
+    fee_all_time_usd, _ = calc_fees_usd_in_window_from_cash_flows(pos_list_all, datetime(2000, 1, 1, tzinfo=JST), end_dt)
+    
     avg_daily = fee_7d_usd / 7 if fee_7d_usd > 0 else 0.0
     weekly_apr = fee_7d_usd * 52 if fee_7d_usd > 0 else 0.0
-
+    
     report = (
         "CBC Liquidity Mining — Weekly\n"
         f"Week Ending: {end_dt.strftime('%Y-%m-%d %H:%M')} JST\n"
