@@ -425,25 +425,25 @@ def main():
         name = s.get("name") or "NONAME"
         safe = s.get("safe_address")
         chat_id = s.get("telegram_chat_id")
-
+        
         if not safe or not chat_id:
             print(f"skip: missing safe/chat_id name={name}", flush=True)
             continue
 
-        try:
-            if mode == "WEEKLY":
-                report = build_weekly_report_for_safe(safe)
-            else:
-                report = build_daily_report_for_safe(safe)
-                
-            send_telegram(report, chat_id)
+    try:
+        if mode == "WEEKLY":
+            report = build_weekly_report_for_safe(safe)
+        else:
+            report = build_daily_report_for_safe(safe)
 
-        except Exception as e:
-            print(f"error name={name} safe={safe}: {e}", flush=True)
-            try:
-                send_telegram(f"CBC LM ERROR\nNAME: {h(name)}\nSAFE: {h(safe)}\n{h(e)}", chat_id)
-            except Exception:
-                pass
+        send_telegram(report, chat_id)
+
+    except Exception as e:
+        print(f"error name={name} safe={safe}: {e}", flush=True)
+        try:
+            send_telegram(f"CBC LM ERROR\nNAME: {name}\nSAFE: {safe}\n\n{e}", chat_id)
+        except Exception:
+            pass
 
 
 if __name__ == "__main__":
