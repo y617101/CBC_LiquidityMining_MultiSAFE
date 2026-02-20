@@ -407,11 +407,19 @@ def build_daily_report_for_safe(safe: str):
 
     return report
 
-# ==========================
+# ===============================
 # Weekly
-# ==========================
+# ===============================
 def build_weekly_report_for_safe(safe: str) -> str:
-    end_dt = get_period_end_jst()
+    """
+    Weekly report (SAFE単位)
+    - 7日確定手数料（cash_flows: fees-collected / claimed-fees の合計）
+    - Transactions(7d)
+    - 前週比：確定収益（7d）だけ（Netは出さない方針）
+    - All-time：確定手数料累計（cash_flows全期間の合計）
+    """
+    # TODO: 次に実装（まずは動作確認のダミー）
+    end_dt = get_period_end_jst()              # 「今日の09:00 JST」
     start_dt = end_dt - timedelta(days=7)
 
     report = (
@@ -430,12 +438,13 @@ def build_weekly_report_for_safe(safe: str) -> str:
     return report
 
 
-# ----------------
+# ===============================
 # main
-# ----------------
+# ===============================
 def main():
     mode = get_report_mode()
-    print(f"DBG REPORT_MODE={mode}")
+    print(f"DBG REPORT_MODE={mode}", flush=True)
+
     cfg = load_config()
     safes = cfg.get("safes") or []
     if not safes:
@@ -457,13 +466,13 @@ def main():
                 report = build_weekly_report_for_safe(safe)
             else:
                 report = build_daily_report_for_safe(safe)
-                
+
             send_telegram(report, chat_id)
 
         except Exception as e:
             print(f"error name={name} safe={safe}: {e}", flush=True)
             try:
-                send_telegram(f"CBC LM ERROR\nNAME: {h(name)}\nSAFE: {h(safe)}\n{h(e)}", chat_id)
+                send_telegram(f"CBC LM ERROR\nNAME: {name}\nSAFE: {safe}\n\n{e}", chat_id)
             except Exception:
                 pass
 
