@@ -515,40 +515,52 @@ def build_weekly_report_for_safe(safe: str) -> str:
     positions_open = fetch_positions(safe, active=True)
     positions_exited = fetch_positions(safe, active=False)
 
-    pos_list_open = _normalize_positions(positions_open)
-    pos_list_exited = _normalize_positions(positions_exited)
-
-    pos_list_all = []
-    pos_list_all.extend(pos_list_open)
-    pos_list_all.extend(pos_list_exited)
-
-    fee_7d_usd, tx_7d = calc_fee_usd_in_window_from_cash_flows(pos_list_all, start_dt, end_dt)
-        pos_list_all,
-        start_dt,
-        end_dt,
+    pos_list_open = (
+        positions_open
+        if isinstance(positions_open, list)
+        else positions_open.get("positions", positions_open.get("data", []))
     )
 
-    avg_daily_fee = fee_7d_usd / 7 if fee_7d_usd > 0 else 0.0
+    pos_list_exited = (
+        positions_exited
+        if isinstance(positions_exited, list)
+        else positions_exited.get("positions", positions_exited.get("data", []))
+    )
 
-    net_total = 0.0
-    for pos in pos_list_open:
-        net_total += float(calc_net_usd(pos) or 0.0)
+    pos_list_all = []
+    if isinstance(pos_list_open, list):
+        pos_list_all.extend(pos_list_open)
+    if isinstance(pos_list_exited, list):
+        pos_list_all.extend(pos_list_exited)
 
-    weekly_apr = calc_weekly_apr_a(fee_7d_usd, net_total)
-    all_time_fee = calc_all_time_fees_usd_from_cash_flows(pos_list_all)
+    fee_7d_usd, tx_7d = calc_fees_usd_in_window_from_cash_flows(
+        pos_list_all,
+        start_dt,
+        end_dt
+    )
+
+    fee_all_time_usd, _ = calc_fees_usd_in_window_from_cash_flows(
+        pos_list_all,
+        datetime(2000, 1, 1, tzinfo=JST),
+        end_dt
+    )
+
+    avg_daily = fee_7d_usd / 7 if fee_7d_usd > 0 else 0.0
+    weekly_apr = fee_7d_usd * 52 if fee_7d_usd > 0 else 0.0
 
     report = (
         "CBC Liquidity Mining — Weekly\n"
         f"Week Ending: {end_dt.strftime('%Y-%m-%d %H:%M')} JST\n"
         f"Period: {start_dt.strftime('%Y-%m-%d %H:%M')} → {end_dt.strftime('%Y-%m-%d %H:%M')} JST\n"
         "────────────────\n"
-        f"SAFE\n{h(safe)}\n\n"
+        f"SAFE\n{safe}\n\n"
         f"・7日確定手数料 {fmt_money(fee_7d_usd)}\n"
-        f"・平均確定手数料 {fmt_money(avg_daily_fee)}/day\n"
+        f"・平均確定手数料 {fmt_money(avg_daily)}/day\n"
         f"・Weekly APR（確定基準） {fmt_pct(weekly_apr)}\n"
         f"・Transactions（7d） {tx_7d}\n"
-        f"・累計確定（All-time） {fmt_money(all_time_fee)}\n"
+        f"・累計確定（All-time） {fmt_money(fee_all_time_usd)}\n"
     )
+
     return report
 print("DBG weekly fee_7d_usd=", fee_7d_usd, "tx_7d=", tx_7d, flush=True)
 
