@@ -4,8 +4,21 @@ import html
 import requests
 from datetime import datetime, timedelta, timezone
 
+# ================================
+# Constants
+# ================================
 JST = timezone(timedelta(hours=9))
+REVERT_API = "https://api.revert.finance"
 
+# Token Symbol Map (Base)
+ADDRESS_SYMBOL_MAP = {
+    "0x4200000000000000000000000000000000000006": "WETH",
+    "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913": "USDC",
+}
+
+# ================================
+# Mode / Time
+# ================================
 def get_report_mode() -> str:
     return (os.getenv("REPORT_MODE") or "DAILY").strip().upper()
 
@@ -20,35 +33,18 @@ def get_period_end_jst(now: datetime | None = None) -> datetime:
             now = now.replace(tzinfo=JST)
         else:
             now = now.astimezone(JST)
-
     return now.replace(hour=9, minute=0, second=0, microsecond=0)
 
 # ================================
-# Token Symbol Map (Base)
+# Helpers
 # ================================
-ADDRESS_SYMBOL_MAP = {
-    # Base canonical WETH
-    "0x4200000000000000000000000000000000000006": "WETH",
-    # Base USDC
-    "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913": "USDC",
-}
-
-JST = timezone(timedelta(hours=9))
-REVERT_API = "https://api.revert.finance"
-
-
-# ----------------
-# helpers
-# ----------------
 def dbg(*args):
     if os.getenv("DEBUG") == "1":
         print(*args, flush=True)
 
-
 def h(x) -> str:
     """HTML escape for Telegram parse_mode=HTML safety."""
     return html.escape(str(x), quote=True)
-
 
 def to_f(x, default=None):
     try:
@@ -56,18 +52,14 @@ def to_f(x, default=None):
     except Exception:
         return default
 
-
 def fmt_money(x):
     return "N/A" if x is None else f"${x:,.2f}"
-
 
 def fmt_pct(x):
     return "N/A" if x is None else f"{x:.2f}%"
 
-
 def _lower(s):
     return str(s or "").strip().lower()
-
 
 def _to_ts_sec(ts):
     try:
@@ -78,16 +70,45 @@ def _to_ts_sec(ts):
     except Exception:
         return None
 
+def _normalize_positions(resp) -> list[dict]:
+    """
+    Revert positions API sometimes returns:
+    - list
+    - dict with "positions"
+    - dict with "data"
+    """
+    if isinstance(resp, list):
+        return [p for p in resp if isinstance(p, dict)]
+    if isinstance(resp, dict):
+        data = resp.get("positions")
+        if isinstance(data, list):
+            return [p for p in data if isinstance(p, dict)]
+        data = resp.get("data")
+        if isinstance(data, list):
+            return [p for p in data if isinstance(p, dict)]
+    return []
 
 def calc_fee_apr_a(fee_24h_usd, net_usd):
+    """
+    Daily既存互換（%表示）
+    APR% = fee_usd / net_usd * 365 * 100
+    """
     if fee_24h_usd is None or net_usd is None or net_usd <= 0:
         return None
     return (fee_24h_usd / net_usd) * 365 * 100
 
+def calc_weekly_apr_a(fee_7d_usd, net_usd):
+    """
+    Weekly（%表示）
+    APR% = fee_7d / net * (365/7) * 100
+    """
+    if fee_7d_usd is None or net_usd is None or net_usd <= 0:
+        return None
+    return (fee_7d_usd / net_usd) * (365 / 7) * 100
 
-# ----------------
+# ================================
 # Telegram
-# ----------------
+# ================================
 def send_telegram(text: str, chat_id: str = None):
     token = os.getenv("TG_BOT_TOKEN")
     if not token:
@@ -101,7 +122,7 @@ def send_telegram(text: str, chat_id: str = None):
 
     url = f"https://api.telegram.org/bot{token}/sendMessage"
 
-    # Telegram message limit is ~4096 chars; keep margin
+    # Telegram message limit ~4096 chars; keep margin
     max_len = 3800
     s = str(text)
 
@@ -138,17 +159,15 @@ def send_telegram(text: str, chat_id: str = None):
         dbg(f"Telegram part {i}/{len(chunks)} status:", r.status_code)
         r.raise_for_status()
 
-
-# ----------------
+# ================================
 # Revert API
-# ----------------
+# ================================
 def fetch_positions(safe: str, active: bool = True):
     url = f"{REVERT_API}/v1/positions/uniswapv3/account/{safe}"
     params = {"active": "true" if active else "false", "with-v4": "true"}
     r = requests.get(url, params=params, timeout=30)
     r.raise_for_status()
     return r.json()
-
 
 def resolve_symbol(pos, which):
     v = pos.get(which)
@@ -182,10 +201,9 @@ def resolve_symbol(pos, which):
 
     return "TOKEN"
 
-
-# ----------------
+# ================================
 # Net USD
-# ----------------
+# ================================
 def extract_repay_usd_from_cash_flows(pos):
     cfs = pos.get("cash_flows") or []
     if not isinstance(cfs, list):
@@ -242,19 +260,16 @@ def extract_repay_usd_from_cash_flows(pos):
     debt = borrow_usd - repay_usd
     return debt if debt > 0 else 0.0
 
-
 def calc_net_usd(pos):
     pooled_usd = to_f(pos.get("underlying_value"))
     if pooled_usd is None:
         return None
-
     debt_usd = extract_repay_usd_from_cash_flows(pos) or 0.0
     return pooled_usd - debt_usd
 
-
-# ----------------
-# 24h fee calc
-# ----------------
+# ================================
+# 24h fee calc (Daily existing)
+# ================================
 def calc_fee_usd_24h_from_cash_flows(pos_list_all, now_dt):
     end_dt = now_dt.replace(hour=9, minute=0, second=0, microsecond=0)
     if now_dt < end_dt:
@@ -332,39 +347,101 @@ def calc_fee_usd_24h_from_cash_flows(pos_list_all, now_dt):
 
     return total, total_count, fee_by_nft, count_by_nft, start_dt, end_dt
 
+# ================================
+# Weekly fee calc (FINAL)
+# ================================
+def calc_fees_usd_in_window_from_cash_flows(pos_list_all, start_dt: datetime, end_dt: datetime):
+    """
+    Weekly確定手数料（cash_flowsのtype == 'fees-collected' のUSD合計）
+    """
+    total = 0.0
+    count = 0
 
-# ----------------
+    for pos in (pos_list_all or []):
+        if not isinstance(pos, dict):
+            continue
+
+        cfs = pos.get("cash_flows") or []
+        if not isinstance(cfs, list):
+            continue
+
+        for cf in cfs:
+            if not isinstance(cf, dict):
+                continue
+
+            if _lower(cf.get("type")) != "fees-collected":
+                continue
+
+            ts = _to_ts_sec(cf.get("timestamp"))
+            if ts is None:
+                continue
+
+            ts_dt = datetime.fromtimestamp(ts, JST)
+            if not (start_dt <= ts_dt < end_dt):
+                continue
+
+            amt_usd = to_f(cf.get("amount_usd"))
+            if amt_usd is None:
+                continue
+
+            try:
+                amt_usd = float(amt_usd)
+            except Exception:
+                continue
+
+            if not (amt_usd > 0):
+                continue
+
+            total += amt_usd
+            count += 1
+
+    return total, count
+
+def calc_all_time_fees_usd_from_cash_flows(pos_list_all):
+    total = 0.0
+    for pos in (pos_list_all or []):
+        if not isinstance(pos, dict):
+            continue
+        cfs = pos.get("cash_flows") or []
+        if not isinstance(cfs, list):
+            continue
+        for cf in cfs:
+            if not isinstance(cf, dict):
+                continue
+            if _lower(cf.get("type")) != "fees-collected":
+                continue
+            amt_usd = to_f(cf.get("amount_usd"))
+            if amt_usd is None:
+                continue
+            try:
+                amt_usd = float(amt_usd)
+            except Exception:
+                continue
+            if amt_usd > 0:
+                total += amt_usd
+    return total
+
+# ================================
 # config
-# ----------------
+# ================================
 def load_config():
     path = os.environ.get("CONFIG_PATH", "config.json")
     with open(path, "r", encoding="utf-8") as f:
         return json.load(f)
 
-
-# ----------------
-# report builder
-# ----------------
+# ================================
+# Daily (existing, kept)
+# ================================
 def build_daily_report_for_safe(safe: str):
     positions_open = fetch_positions(safe, active=True)
     positions_exited = fetch_positions(safe, active=False)
 
-    pos_list_open = (
-        positions_open
-        if isinstance(positions_open, list)
-        else positions_open.get("positions", positions_open.get("data", []))
-    )
-    pos_list_exited = (
-        positions_exited
-        if isinstance(positions_exited, list)
-        else positions_exited.get("positions", positions_exited.get("data", []))
-    )
+    pos_list_open = _normalize_positions(positions_open)
+    pos_list_exited = _normalize_positions(positions_exited)
 
     pos_list_all = []
-    if isinstance(pos_list_open, list):
-        pos_list_all += pos_list_open
-    if isinstance(pos_list_exited, list):
-        pos_list_all += pos_list_exited
+    pos_list_all += pos_list_open
+    pos_list_all += pos_list_exited
 
     now_dt = datetime.now(JST)
     fee_usd, fee_count, fee_by_nft, _, _, end_dt = calc_fee_usd_24h_from_cash_flows(pos_list_all, now_dt)
@@ -373,7 +450,7 @@ def build_daily_report_for_safe(safe: str):
     net_total = 0.0
     unclaimed_total = 0.0  # fees_value合算(USD)
 
-    for pos in (pos_list_open if isinstance(pos_list_open, list) else []):
+    for pos in pos_list_open:
         nft_id = str(pos.get("nft_id", "UNKNOWN"))
 
         in_range = pos.get("in_range")
@@ -424,34 +501,51 @@ def build_daily_report_for_safe(safe: str):
     return report
 
 # ===============================
-# Weekly
+# Weekly (FINAL: avg/day, no prev-week)
 # ===============================
 def build_weekly_report_for_safe(safe: str) -> str:
-    """
-    Weekly report (SAFE単位)
-    - 7日確定手数料（cash_flows: fees-collected / claimed-fees の合計）
-    - Transactions(7d)
-    - 前週比：確定収益（7d）だけ（Netは出さない方針）
-    - All-time：確定手数料累計（cash_flows全期間の合計）
-    """
-    end_dt = get_period_end_jst()          # 「今日の09:00 JST」
-    start_dt = end_dt - timedelta(days=7) # 7日窓
+    end_dt = get_period_end_jst()                 # 今日 09:00 JST
+    start_dt = end_dt - timedelta(days=7)         # 7日窓
+
+    # open + exited 両方のcash_flowsを対象にする（確定ログ取りこぼし防止）
+    positions_open = fetch_positions(safe, active=True)
+    positions_exited = fetch_positions(safe, active=False)
+
+    pos_list_open = _normalize_positions(positions_open)
+    pos_list_exited = _normalize_positions(positions_exited)
+
+    pos_list_all = []
+    pos_list_all += pos_list_open
+    pos_list_all += pos_list_exited
+
+    # 7d fees-collected
+    fee_7d_usd, tx_7d = calc_fees_usd_in_window_from_cash_flows(pos_list_all, start_dt, end_dt)
+    avg_daily_fee = fee_7d_usd / 7 if fee_7d_usd > 0 else 0.0
+
+    # Net合算（現状：activeのみで合算＝Dailyと整合）
+    net_total = 0.0
+    for pos in pos_list_open:
+        net_total += float(calc_net_usd(pos) or 0.0)
+
+    weekly_apr = calc_weekly_apr_a(fee_7d_usd, net_total)
+
+    # All-time fees-collected
+    all_time_fee = calc_all_time_fees_usd_from_cash_flows(pos_list_all)
 
     report = (
         "CBC Liquidity Mining — Weekly\n"
         f"Week Ending: {end_dt.strftime('%Y-%m-%d %H:%M')} JST\n"
         f"Period: {start_dt.strftime('%Y-%m-%d %H:%M')} → {end_dt.strftime('%Y-%m-%d %H:%M')} JST\n"
         "────────────────\n"
-        f"SAFE\n{safe}\n\n"
-        "・7日確定手数料 $0.00\n"
-        "・Weekly APR（確定基準） 0.00%\n"
-        "・Transactions（7d） 0\n"
-        "・前週比（確定収益） N/A\n"
-        "・先週との差額（確定） N/A\n"
-        "・累計確定（All-time） N/A\n"
+        f"SAFE\n{h(safe)}\n\n"
+        f"・7日確定手数料 {fmt_money(fee_7d_usd)}\n"
+        f"・平均確定手数料 {fmt_money(avg_daily_fee)}/day\n"
+        f"・Weekly APR（確定基準） {fmt_pct(weekly_apr)}\n"
+        f"・Transactions（7d） {tx_7d}\n"
+        f"・累計確定（All-time） {fmt_money(all_time_fee)}\n"
     )
     return report
-    
+
 # ===============================
 # main
 # ===============================
@@ -485,10 +579,9 @@ def main():
         except Exception as e:
             print(f"error name={name} safe={safe}: {e}", flush=True)
             try:
-                send_telegram(f"CBC LM ERROR\nNAME: {name}\nSAFE: {safe}\n\n{e}", chat_id)
+                send_telegram(f"CBC LM ERROR\nNAME: {h(name)}\nSAFE: {h(safe)}\n\n{h(e)}", chat_id)
             except Exception:
                 pass
-
 
 if __name__ == "__main__":
     main()
