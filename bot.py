@@ -533,8 +533,7 @@ def build_weekly_report_for_safe(safe: str) -> str:
     if isinstance(pos_list_exited, list):
         pos_list_all.extend(pos_list_exited)
 
-    fee_7d_usd, tx_7d = calc_fees_usd_in_window_from_cash_flows(
-        pos_list_all,
+    fee_7d_usd, tx_7d = calc_fees_usd_in_window_from_cash_flows(pos_list_all, start_dt, end_dt)
         start_dt,
         end_dt
     )
