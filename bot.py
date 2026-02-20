@@ -1,5 +1,6 @@
 import os
 import json
+import html
 import requests
 from datetime import datetime, timedelta, timezone
 
@@ -9,16 +10,65 @@ from datetime import datetime, timedelta, timezone
 ADDRESS_SYMBOL_MAP = {
     # Base canonical WETH
     "0x4200000000000000000000000000000000000006": "WETH",
-
     # Base USDC
     "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913": "USDC",
 }
-
 
 JST = timezone(timedelta(hours=9))
 REVERT_API = "https://api.revert.finance"
 
 
+# ----------------
+# helpers
+# ----------------
+def dbg(*args):
+    if os.getenv("DEBUG") == "1":
+        print(*args, flush=True)
+
+
+def h(x) -> str:
+    """HTML escape for Telegram parse_mode=HTML safety."""
+    return html.escape(str(x), quote=True)
+
+
+def to_f(x, default=None):
+    try:
+        return float(x)
+    except Exception:
+        return default
+
+
+def fmt_money(x):
+    return "N/A" if x is None else f"${x:,.2f}"
+
+
+def fmt_pct(x):
+    return "N/A" if x is None else f"{x:.2f}%"
+
+
+def _lower(s):
+    return str(s or "").strip().lower()
+
+
+def _to_ts_sec(ts):
+    try:
+        ts_i = int(ts)
+        if ts_i > 10_000_000_000:  # ms -> sec
+            ts_i //= 1000
+        return ts_i
+    except Exception:
+        return None
+
+
+def calc_fee_apr_a(fee_24h_usd, net_usd):
+    if fee_24h_usd is None or net_usd is None or net_usd <= 0:
+        return None
+    return (fee_24h_usd / net_usd) * 365 * 100
+
+
+# ----------------
+# Telegram
+# ----------------
 def send_telegram(text: str, chat_id: str = None):
     token = os.getenv("TG_BOT_TOKEN")
     if not token:
@@ -32,8 +82,9 @@ def send_telegram(text: str, chat_id: str = None):
 
     url = f"https://api.telegram.org/bot{token}/sendMessage"
 
+    # Telegram message limit is ~4096 chars; keep margin
+    max_len = 3800
     s = str(text)
-    max_len = 3500
 
     lines = s.split("\n")
     chunks = []
@@ -63,181 +114,21 @@ def send_telegram(text: str, chat_id: str = None):
                 "parse_mode": "HTML",
                 "disable_web_page_preview": True,
             },
-            timeout=30
+            timeout=30,
         )
-        print(f"Telegram part {i}/{len(chunks)} status:", r.status_code, flush=True)
+        dbg(f"Telegram part {i}/{len(chunks)} status:", r.status_code)
         r.raise_for_status()
 
 
-
+# ----------------
+# Revert API
+# ----------------
 def fetch_positions(safe: str, active: bool = True):
     url = f"{REVERT_API}/v1/positions/uniswapv3/account/{safe}"
     params = {"active": "true" if active else "false", "with-v4": "true"}
     r = requests.get(url, params=params, timeout=30)
     r.raise_for_status()
     return r.json()
-
-
-def to_f(x, default=None):
-    try:
-        return float(x)
-    except:
-        return default
-
-
-def fmt_money(x):
-    return "N/A" if x is None else f"${x:,.2f}"
-
-
-def fmt_pct(x):
-    return "N/A" if x is None else f"{x:.2f}%"
-
-
-def _lower(s):
-    return str(s or "").strip().lower()
-
-
-def _to_ts_sec(ts):
-    try:
-        ts_i = int(ts)
-        if ts_i > 10_000_000_000:  # ms -> sec
-            ts_i //= 1000
-        return ts_i
-    except:
-        return None
-
-
-def calc_fee_apr_a(fee_24h_usd, net_usd):
-    if fee_24h_usd is None or net_usd is None or net_usd <= 0:
-        return None
-    return (fee_24h_usd / net_usd) * 365 * 100
-
-
-def extract_repay_usd_from_cash_flows(pos):
-    cfs = pos.get("cash_flows") or []
-    if not isinstance(cfs, list):
-        return 0.0
-
-    # 1) total_debt を最優先（最新timestampのもの）
-    latest = None
-    latest_ts = -1
-    for cf in cfs:
-        if not isinstance(cf, dict):
-            continue
-        t = _lower(cf.get("type"))
-        if t not in ("lendor-borrow", "lendor-repay"):
-            continue
-        td = to_f(cf.get("total_debt"))
-        ts = to_f(cf.get("timestamp")) or 0
-        if td is not None and ts >= latest_ts:
-            latest_ts = ts
-            latest = td
-
-    if latest is not None:
-        return max(float(latest), 0.0)
-
-    # 2) total_debt が無い場合のみ、borrows - repays をUSDで集計（USDフィールド優先）
-    borrow_usd = 0.0
-    repay_usd = 0.0
-
-    for cf in cfs:
-        if not isinstance(cf, dict):
-            continue
-        t = _lower(cf.get("type"))
-        if t not in ("lendor-borrow", "lendor-repay"):
-            continue
-
-        v = to_f(cf.get("amount_usd"))
-        if v is None: v = to_f(cf.get("usd"))
-        if v is None: v = to_f(cf.get("value_usd"))
-        if v is None: v = to_f(cf.get("valueUsd"))
-        if v is None: v = to_f(cf.get("amountUsd"))
-
-        if v is None:
-            continue
-
-        v = abs(float(v))
-        if t == "lendor-borrow":
-            borrow_usd += v
-        else:
-            repay_usd += v
-
-    debt = borrow_usd - repay_usd
-    return debt if debt > 0 else 0.0
-
-
-def calc_net_usd(pos):
-    pooled_usd = to_f(pos.get("underlying_value"))
-    if pooled_usd is None:
-        return None
-
-    debt_usd = extract_repay_usd_from_cash_flows(pos) or 0.0
-    return pooled_usd - debt_usd
-
-
-def calc_fee_usd_24h_from_cash_flows(pos_list_all, now_dt):
-    end_dt = now_dt.replace(hour=9, minute=0, second=0, microsecond=0)
-    if now_dt < end_dt:
-        end_dt -= timedelta(days=1)
-    start_dt = end_dt - timedelta(days=1)
-
-    total = 0.0
-    total_count = 0
-    fee_by_nft = {}
-    count_by_nft = {}
-
-    for pos in (pos_list_all or []):
-        if not isinstance(pos, dict):
-            continue
-
-        nft_id = str(pos.get("nft_id", "UNKNOWN"))
-        cfs = pos.get("cash_flows") or []
-        if not isinstance(cfs, list):
-            continue
-
-        for cf in cfs:
-            if not isinstance(cf, dict):
-                continue
-
-            t = _lower(cf.get("type"))
-
-            # あなたの現仕様：fees/collect/claim を含むものを対象（ここは現状維持）
-            if not any(k in t for k in ("fee", "collect", "claim")):
-                continue
-
-            ts = _to_ts_sec(cf.get("timestamp"))
-            if ts is None:
-                continue
-
-            ts_dt = datetime.fromtimestamp(ts, JST)
-            if ts_dt < start_dt or ts_dt >= end_dt:
-                continue
-
-            amt_usd = to_f(cf.get("amount_usd"))
-
-            if amt_usd is None:
-                prices = cf.get("prices") or {}
-                p0 = to_f((prices.get("token0") or {}).get("usd")) or 0.0
-                p1 = to_f((prices.get("token1") or {}).get("usd")) or 0.0
-
-                q0 = to_f(cf.get("collected_fees_token0")) or to_f(cf.get("claimed_token0")) or to_f(cf.get("fees0")) or to_f(cf.get("amount0")) or 0.0
-                q1 = to_f(cf.get("collected_fees_token1")) or to_f(cf.get("claimed_token1")) or to_f(cf.get("fees1")) or to_f(cf.get("amount1")) or 0.0
-
-                amt_usd = abs(q0) * p0 + abs(q1) * p1
-
-            try:
-                amt_usd = float(amt_usd)
-            except:
-                continue
-            if not (amt_usd > 0):
-                continue
-
-            total += amt_usd
-            total_count += 1
-            fee_by_nft[nft_id] = fee_by_nft.get(nft_id, 0.0) + amt_usd
-            count_by_nft[nft_id] = count_by_nft.get(nft_id, 0) + 1
-
-    return total, total_count, fee_by_nft, count_by_nft, start_dt, end_dt
 
 
 def resolve_symbol(pos, which):
@@ -273,18 +164,182 @@ def resolve_symbol(pos, which):
     return "TOKEN"
 
 
+# ----------------
+# Net USD
+# ----------------
+def extract_repay_usd_from_cash_flows(pos):
+    cfs = pos.get("cash_flows") or []
+    if not isinstance(cfs, list):
+        return 0.0
+
+    # 1) total_debt を最優先（最新timestampのもの）
+    latest = None
+    latest_ts = -1
+    for cf in cfs:
+        if not isinstance(cf, dict):
+            continue
+        t = _lower(cf.get("type"))
+        if t not in ("lendor-borrow", "lendor-repay"):
+            continue
+        td = to_f(cf.get("total_debt"))
+        ts = to_f(cf.get("timestamp")) or 0
+        if td is not None and ts >= latest_ts:
+            latest_ts = ts
+            latest = td
+
+    if latest is not None:
+        return max(float(latest), 0.0)
+
+    # 2) total_debt が無い場合のみ、borrows - repays をUSDで集計
+    borrow_usd = 0.0
+    repay_usd = 0.0
+
+    for cf in cfs:
+        if not isinstance(cf, dict):
+            continue
+        t = _lower(cf.get("type"))
+        if t not in ("lendor-borrow", "lendor-repay"):
+            continue
+
+        v = to_f(cf.get("amount_usd"))
+        if v is None:
+            v = to_f(cf.get("usd"))
+        if v is None:
+            v = to_f(cf.get("value_usd"))
+        if v is None:
+            v = to_f(cf.get("valueUsd"))
+        if v is None:
+            v = to_f(cf.get("amountUsd"))
+
+        if v is None:
+            continue
+
+        v = abs(float(v))
+        if t == "lendor-borrow":
+            borrow_usd += v
+        else:
+            repay_usd += v
+
+    debt = borrow_usd - repay_usd
+    return debt if debt > 0 else 0.0
+
+
+def calc_net_usd(pos):
+    pooled_usd = to_f(pos.get("underlying_value"))
+    if pooled_usd is None:
+        return None
+
+    debt_usd = extract_repay_usd_from_cash_flows(pos) or 0.0
+    return pooled_usd - debt_usd
+
+
+# ----------------
+# 24h fee calc
+# ----------------
+def calc_fee_usd_24h_from_cash_flows(pos_list_all, now_dt):
+    end_dt = now_dt.replace(hour=9, minute=0, second=0, microsecond=0)
+    if now_dt < end_dt:
+        end_dt -= timedelta(days=1)
+    start_dt = end_dt - timedelta(days=1)
+
+    total = 0.0
+    total_count = 0
+    fee_by_nft = {}
+    count_by_nft = {}
+
+    for pos in (pos_list_all or []):
+        if not isinstance(pos, dict):
+            continue
+
+        nft_id = str(pos.get("nft_id", "UNKNOWN"))
+        cfs = pos.get("cash_flows") or []
+        if not isinstance(cfs, list):
+            continue
+
+        for cf in cfs:
+            if not isinstance(cf, dict):
+                continue
+
+            t = _lower(cf.get("type"))
+
+            # 現仕様：fees/collect/claim を含むものを対象（維持）
+            if not any(k in t for k in ("fee", "collect", "claim")):
+                continue
+
+            ts = _to_ts_sec(cf.get("timestamp"))
+            if ts is None:
+                continue
+
+            ts_dt = datetime.fromtimestamp(ts, JST)
+            if ts_dt < start_dt or ts_dt >= end_dt:
+                continue
+
+            amt_usd = to_f(cf.get("amount_usd"))
+
+            if amt_usd is None:
+                prices = cf.get("prices") or {}
+                p0 = to_f((prices.get("token0") or {}).get("usd")) or 0.0
+                p1 = to_f((prices.get("token1") or {}).get("usd")) or 0.0
+
+                q0 = (
+                    to_f(cf.get("collected_fees_token0"))
+                    or to_f(cf.get("claimed_token0"))
+                    or to_f(cf.get("fees0"))
+                    or to_f(cf.get("amount0"))
+                    or 0.0
+                )
+                q1 = (
+                    to_f(cf.get("collected_fees_token1"))
+                    or to_f(cf.get("claimed_token1"))
+                    or to_f(cf.get("fees1"))
+                    or to_f(cf.get("amount1"))
+                    or 0.0
+                )
+
+                amt_usd = abs(q0) * p0 + abs(q1) * p1
+
+            try:
+                amt_usd = float(amt_usd)
+            except Exception:
+                continue
+
+            if not (amt_usd > 0):
+                continue
+
+            total += amt_usd
+            total_count += 1
+            fee_by_nft[nft_id] = fee_by_nft.get(nft_id, 0.0) + amt_usd
+            count_by_nft[nft_id] = count_by_nft.get(nft_id, 0) + 1
+
+    return total, total_count, fee_by_nft, count_by_nft, start_dt, end_dt
+
+
+# ----------------
+# config
+# ----------------
 def load_config():
     path = os.environ.get("CONFIG_PATH", "config.json")
     with open(path, "r", encoding="utf-8") as f:
         return json.load(f)
 
 
-def build_daily_report_for_safe(safe, name):
+# ----------------
+# report builder
+# ----------------
+def build_daily_report_for_safe(safe: str):
     positions_open = fetch_positions(safe, active=True)
     positions_exited = fetch_positions(safe, active=False)
 
-    pos_list_open = positions_open if isinstance(positions_open, list) else positions_open.get("positions", positions_open.get("data", []))
-    pos_list_exited = positions_exited if isinstance(positions_exited, list) else positions_exited.get("positions", positions_exited.get("data", []))
+    pos_list_open = (
+        positions_open
+        if isinstance(positions_open, list)
+        else positions_open.get("positions", positions_open.get("data", []))
+    )
+    pos_list_exited = (
+        positions_exited
+        if isinstance(positions_exited, list)
+        else positions_exited.get("positions", positions_exited.get("data", []))
+    )
 
     pos_list_all = []
     if isinstance(pos_list_open, list):
@@ -293,12 +348,11 @@ def build_daily_report_for_safe(safe, name):
         pos_list_all += pos_list_exited
 
     now_dt = datetime.now(JST)
-    fee_usd, fee_count, fee_by_nft, count_by_nft, start_dt, end_dt = calc_fee_usd_24h_from_cash_flows(pos_list_all, now_dt)
+    fee_usd, fee_count, fee_by_nft, _, _, end_dt = calc_fee_usd_24h_from_cash_flows(pos_list_all, now_dt)
 
-    # --- NFT blocks (active only) ---
     nft_lines = []
     net_total = 0.0
-    unclaimed_total = 0.0  # = fees_value 合算（USD）
+    unclaimed_total = 0.0  # fees_value合算(USD)
 
     for pos in (pos_list_open if isinstance(pos_list_open, list) else []):
         nft_id = str(pos.get("nft_id", "UNKNOWN"))
@@ -309,38 +363,36 @@ def build_daily_report_for_safe(safe, name):
         net = float(calc_net_usd(pos) or 0.0)
         net_total += net
 
-        # 未Claim（USD）
         fees_value = float(to_f(pos.get("fees_value"), 0.0) or 0.0)
         unclaimed_total += fees_value
 
-        # 24h確定（claimed）このNFT分（USD）
-        fee_usd_nft = float(fee_by_nft.get(str(nft_id), 0.0) or 0.0)
+        fee_usd_nft = float(fee_by_nft.get(nft_id, 0.0) or 0.0)
 
         # NEW APR（NFT）: (24h確定 + 未Claim) / Net * 365
         nft_apr_base = fee_usd_nft + fees_value
         nft_fee_apr = calc_fee_apr_a(nft_apr_base, net)
 
         nft_url = f"https://app.uniswap.org/positions/v3/base/{nft_id}"
-        nft_link = f'<a href="{nft_url}">{nft_id}</a>'
-        
+        nft_link = f'<a href="{h(nft_url)}">{h(nft_id)}</a>'
+
         nft_lines.append(
-            f"\nNFT {nft_link}\n"
-            f"Status: {status}\n"
+            "\n"
+            f"NFT {nft_link}\n"
+            f"Status: {h(status)}\n"
             f"Net: {fmt_money(net)}\n"
             f"蓄積手数料（未Claim） {fmt_money(fees_value)}\n"
             f"Fee APR: {fmt_pct(nft_fee_apr)}\n"
         )
 
-    # --- SAFE APR (NEW) ---
+    # SAFE APR（NEW）: (24h確定 + 未Claim合計) / Net合算 * 365
     apr_base_usd = float(fee_usd or 0.0) + float(unclaimed_total or 0.0)
     safe_fee_apr = calc_fee_apr_a(apr_base_usd, net_total)
 
-    # --- Report (order you specified) ---
     report = (
         "CBC Liquidity Mining — Daily\n"
         f"Period End: {end_dt.strftime('%Y-%m-%d %H:%M')} JST\n"
         "────────────────\n"
-        f"SAFE\n{safe}\n\n"
+        f"SAFE\n{h(safe)}\n\n"
         f"・推定総収益（24h＋未Claim） {fmt_money(apr_base_usd)}\n"
         f"・確定手数料（24h） {fmt_money(fee_usd)}\n"
         f"・蓄積手数料（未Claim） {fmt_money(unclaimed_total)}\n"
@@ -353,6 +405,9 @@ def build_daily_report_for_safe(safe, name):
     return report
 
 
+# ----------------
+# main
+# ----------------
 def main():
     cfg = load_config()
     safes = cfg.get("safes") or []
@@ -361,7 +416,7 @@ def main():
         return
 
     for s in safes:
-        print("DEBUG SAFE CFG:", s, flush=True)
+        dbg("SAFE CFG:", s)
         name = s.get("name") or "NONAME"
         safe = s.get("safe_address")
         chat_id = s.get("telegram_chat_id")
@@ -371,22 +426,15 @@ def main():
             continue
 
         try:
-            report_body = build_daily_report_for_safe(safe, name)
-
-            full_report = report_body
-           
-            send_telegram(full_report, chat_id)
+            report = build_daily_report_for_safe(safe)
+            send_telegram(report, chat_id)
 
         except Exception as e:
             print(f"error name={name} safe={safe}: {e}", flush=True)
             try:
-                send_telegram(
-                    f"CBC LM ERROR\nNAME: {name}\nSAFE: {safe}\n{e}",
-                    chat_id
-                )
-            except:
+                send_telegram(f"CBC LM ERROR\nNAME: {h(name)}\nSAFE: {h(safe)}\n{h(e)}", chat_id)
+            except Exception:
                 pass
-
 
 
 if __name__ == "__main__":
