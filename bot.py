@@ -1,7 +1,4 @@
 import os
-
-def get_report_mode() -> str:
-    return (os.getenv("REPORT_MODE") or "DAILY").strip().upper()
 import json
 import html
 import requests
@@ -9,24 +6,22 @@ from datetime import datetime, timedelta, timezone
 
 JST = timezone(timedelta(hours=9))
 
+def get_report_mode() -> str:
+    return (os.getenv("REPORT_MODE") or "DAILY").strip().upper()
+
 def get_period_end_jst(now: datetime | None = None) -> datetime:
     """
-    Return period end aligned to 09:00 JST.
-    - If now is before 09:00 JST, end is today 09:00 JST.
-    - If now is after 09:00 JST, end is today 09:00 JST.
-    (So effectively: "today at 09:00 JST" based on JST date.)
+    Period end aligned to 09:00 JST (today 09:00 JST).
     """
     if now is None:
         now = datetime.now(JST)
     else:
-        # force JST tz
         if now.tzinfo is None:
             now = now.replace(tzinfo=JST)
         else:
             now = now.astimezone(JST)
 
-    end_dt = now.replace(hour=9, minute=0, second=0, microsecond=0)
-    return end_dt
+    return now.replace(hour=9, minute=0, second=0, microsecond=0)
 
 # ================================
 # Token Symbol Map (Base)
