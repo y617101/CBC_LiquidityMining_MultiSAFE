@@ -433,17 +433,74 @@ def main():
     try:
         if mode == "WEEKLY":
             report = build_weekly_report_for_safe(safe)
-        else:
-            report = build_daily_report_for_safe(safe)
+# ==========================
+# Weekly
+# ==========================
+def build_weekly_report_for_safe(safe: str) -> str:
+    """
+    Weekly report (SAFE単位)
+    - 7日確定手数料（cash_flows: fees-collected / claimed-fees の合計）
+    - Transactions(7d)
+    - 前週比：確定収益（7d）だけ（Netは出さない方針）
+    - All-time：確定手数料累計（cash_flows全期間の合計）
+    """
+    # TODO: ここは次に実装する（まずは動作確認用）
+    end_dt = get_period_end_jst()  # Dailyと同じ「今日の09:00 JST」
+    start_dt = end_dt - timedelta(days=7)
 
-        send_telegram(report, chat_id)
+    report = (
+        "CBC Liquidity Mining — Weekly\n"
+        f"Week Ending: {end_dt.strftime('%Y-%m-%d %H:%M')} JST\n"
+        f"Period: {start_dt.strftime('%Y-%m-%d %H:%M')} → {end_dt.strftime('%Y-%m-%d %H:%M')} JST\n"
+        "────────────────\n"
+        f"SAFE\n{safe}\n\n"
+        "・7日確定手数料 $0.00\n"
+        "・Weekly APR（確定基準） 0.00%\n"
+        "・Transactions（7d） 0\n"
+        "・前週比（確定収益） N/A\n"
+        "・先週との差額（確定） N/A\n"
+        "・累計確定（All-time） N/A\n"
+    )
+    return report
 
-    except Exception as e:
-        print(f"error name={name} safe={safe}: {e}", flush=True)
+
+# ==========================
+# main
+# ==========================
+def main():
+    mode = get_report_mode()
+    print(f"DBG REPORT_MODE={mode}")
+
+    cfg = load_config()
+    safes = cfg.get("safes") or []
+    if not safes:
+        print("config.json: safes is empty", flush=True)
+        return
+
+    for s in safes:
+        dbg("SAFE CFG:", s)
+        name = s.get("name") or "NONAME"
+        safe = s.get("safe_address")
+        chat_id = s.get("telegram_chat_id")
+
+        if not safe or not chat_id:
+            print(f"skip: missing safe/chat_id name={name}", flush=True)
+            continue
+
         try:
-            send_telegram(f"CBC LM ERROR\nNAME: {name}\nSAFE: {safe}\n\n{e}", chat_id)
-        except Exception:
-            pass
+            if mode == "WEEKLY":
+                report = build_weekly_report_for_safe(safe)
+            else:
+                report = build_daily_report_for_safe(safe)
+
+            send_telegram(report, chat_id)
+
+        except Exception as e:
+            print(f"error name={name} safe={safe}: {e}", flush=True)
+            try:
+                send_telegram(f"CBC LM ERROR\nNAME: {name}\nSAFE: {safe}\n\n{e}", chat_id)
+            except Exception:
+                pass
 
 
 if __name__ == "__main__":
