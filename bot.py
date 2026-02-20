@@ -507,7 +507,6 @@ def build_weekly_report_for_safe(safe: str) -> str:
     end_dt = get_period_end_jst()
     start_dt = end_dt - timedelta(days=7)
 
-    # open + exited 両方取得
     positions_open = fetch_positions(safe, active=True)
     positions_exited = fetch_positions(safe, active=False)
 
@@ -518,7 +517,6 @@ def build_weekly_report_for_safe(safe: str) -> str:
     pos_list_all.extend(pos_list_open)
     pos_list_all.extend(pos_list_exited)
 
-    # 7日確定手数料
     fee_7d_usd, tx_7d = calc_fees_usd_in_window_from_cash_flows(
         pos_list_all,
         start_dt,
@@ -527,21 +525,17 @@ def build_weekly_report_for_safe(safe: str) -> str:
 
     avg_daily_fee = fee_7d_usd / 7 if fee_7d_usd > 0 else 0.0
 
-    # Net合算（activeのみ）
     net_total = 0.0
     for pos in pos_list_open:
         net_total += float(calc_net_usd(pos) or 0.0)
 
     weekly_apr = calc_weekly_apr_a(fee_7d_usd, net_total)
-
-    # All-time確定
     all_time_fee = calc_all_time_fees_usd_from_cash_flows(pos_list_all)
 
     report = (
         "CBC Liquidity Mining — Weekly\n"
         f"Week Ending: {end_dt.strftime('%Y-%m-%d %H:%M')} JST\n"
-        f"Period: {start_dt.strftime('%Y-%m-%d %H:%M')} → "
-        f"{end_dt.strftime('%Y-%m-%d %H:%M')} JST\n"
+        f"Period: {start_dt.strftime('%Y-%m-%d %H:%M')} → {end_dt.strftime('%Y-%m-%d %H:%M')} JST\n"
         "────────────────\n"
         f"SAFE\n{h(safe)}\n\n"
         f"・7日確定手数料 {fmt_money(fee_7d_usd)}\n"
@@ -550,7 +544,6 @@ def build_weekly_report_for_safe(safe: str) -> str:
         f"・Transactions（7d） {tx_7d}\n"
         f"・累計確定（All-time） {fmt_money(all_time_fee)}\n"
     )
-
     return report
 
 # ===============================
@@ -559,18 +552,18 @@ def build_weekly_report_for_safe(safe: str) -> str:
 def main():
     mode = get_report_mode()
     print(f"DBG REPORT_MODE={mode}", flush=True)
-
+    
     cfg = load_config()
     safes = cfg.get("safes") or []
     if not safes:
         print("config.json: safes is empty", flush=True)
         return
-
+        
     for s in safes:
         name = s.get("name") or "NONAME"
         safe = s.get("safe_address")
         chat_id = s.get("telegram_chat_id")
-
+        
         if not safe or not chat_id:
             print(f"skip: missing safe/chat_id name={name}", flush=True)
             continue
