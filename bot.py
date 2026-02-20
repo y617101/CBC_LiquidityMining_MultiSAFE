@@ -418,9 +418,8 @@ def build_weekly_report_for_safe(safe: str) -> str:
     - 前週比：確定収益（7d）だけ（Netは出さない方針）
     - All-time：確定手数料累計（cash_flows全期間の合計）
     """
-    # TODO: 次に実装（まずは動作確認のダミー）
-    end_dt = get_period_end_jst()              # 「今日の09:00 JST」
-    start_dt = end_dt - timedelta(days=7)
+    end_dt = get_period_end_jst()          # 「今日の09:00 JST」
+    start_dt = end_dt - timedelta(days=7) # 7日窓
 
     report = (
         "CBC Liquidity Mining — Weekly\n"
@@ -451,7 +450,6 @@ def main():
         return
 
     for s in safes:
-        dbg("SAFE CFG:", s)
         name = s.get("name") or "NONAME"
         safe = s.get("safe_address")
         chat_id = s.get("telegram_chat_id")
