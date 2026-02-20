@@ -436,8 +436,7 @@ def build_weekly_report_for_safe(safe: str) -> str:
         "・累計確定（All-time） N/A\n"
     )
     return report
-
-
+    
 # ===============================
 # main
 # ===============================
