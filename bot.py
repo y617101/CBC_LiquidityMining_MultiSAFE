@@ -346,11 +346,20 @@ def calc_fee_usd_in_window_from_cash_flows(pos_list_all, start_dt: datetime, end
 # ================================
 # Weekly fee calc (FINAL)
 # ================================
-def calc_fees_usd_in_window_from_cash_flows(pos_list_all, start_dt, end_dt):
+def calc_fees_usd_in_window_from_cash_flows(pos_list_all, start_dt: datetime, end_dt: datetime):
+    """
+    Sum fees (USD) in [start_dt, end_dt) from positions cash_flows.
+    Target types: fees-collected / claimed-fees
+    - If amount_usd is None, reconstruct from token amounts * prices.
+    Returns: (total_usd, tx_count)
+    """
     total = 0.0
-    total_count = 0
+    count = 0
 
     for pos in (pos_list_all or []):
+        if not isinstance(pos, dict):
+            continue
+
         cfs = pos.get("cash_flows") or []
         if not isinstance(cfs, list):
             continue
@@ -359,13 +368,9 @@ def calc_fees_usd_in_window_from_cash_flows(pos_list_all, start_dt, end_dt):
             if not isinstance(cf, dict):
                 continue
 
-            t_raw = cf.get("type")
-            if not t_raw:
-                continue
+            t = _lower(cf.get("type"))
 
-            t = str(t_raw).strip().lower()
-
-            # ★ ここを厳密に
+            # ✅ 仕様どおり：Fee Collectedだけに寄せる（誤爆を防ぐ）
             if t not in ("fees-collected", "claimed-fees"):
                 continue
 
@@ -374,18 +379,31 @@ def calc_fees_usd_in_window_from_cash_flows(pos_list_all, start_dt, end_dt):
                 continue
 
             ts_dt = datetime.fromtimestamp(ts, JST)
-            if not (start_dt <= ts_dt < end_dt):
+            if ts_dt < start_dt or ts_dt >= end_dt:
                 continue
 
             amt_usd = to_f(cf.get("amount_usd"))
 
+            # amount_usd が無い場合は、数量×価格で復元
             if amt_usd is None:
                 prices = cf.get("prices") or {}
                 p0 = to_f((prices.get("token0") or {}).get("usd")) or 0.0
                 p1 = to_f((prices.get("token1") or {}).get("usd")) or 0.0
 
-                q0 = to_f(cf.get("collected_fees_token0")) or 0.0
-                q1 = to_f(cf.get("collected_fees_token1")) or 0.0
+                q0 = (
+                    to_f(cf.get("collected_fees_token0"))
+                    or to_f(cf.get("claimed_token0"))
+                    or to_f(cf.get("fees0"))
+                    or to_f(cf.get("amount0"))
+                    or 0.0
+                )
+                q1 = (
+                    to_f(cf.get("collected_fees_token1"))
+                    or to_f(cf.get("claimed_token1"))
+                    or to_f(cf.get("fees1"))
+                    or to_f(cf.get("amount1"))
+                    or 0.0
+                )
 
                 amt_usd = abs(q0) * p0 + abs(q1) * p1
 
@@ -398,9 +416,9 @@ def calc_fees_usd_in_window_from_cash_flows(pos_list_all, start_dt, end_dt):
                 continue
 
             total += amt_usd
-            total_count += 1
+            count += 1
 
-    return total, total_count
+    return total, count
 
 def calc_all_time_fees_usd_from_cash_flows(pos_list_all):
     total = 0.0
@@ -520,7 +538,6 @@ def build_weekly_report_for_safe(safe: str) -> str:
         if isinstance(positions_open, list)
         else positions_open.get("positions", positions_open.get("data", []))
     )
-
     pos_list_exited = (
         positions_exited
         if isinstance(positions_exited, list)
@@ -529,32 +546,41 @@ def build_weekly_report_for_safe(safe: str) -> str:
 
     pos_list_all = []
     if isinstance(pos_list_open, list):
-        pos_list_all.extend(pos_list_open)
+        pos_list_all += pos_list_open
     if isinstance(pos_list_exited, list):
-        pos_list_all.extend(pos_list_exited)
+        pos_list_all += pos_list_exited
 
+    # 7d fees
     fee_7d_usd, tx_7d = calc_fees_usd_in_window_from_cash_flows(pos_list_all, start_dt, end_dt)
 
-    fee_all_time_usd, _ = calc_fees_usd_in_window_from_cash_flows(pos_list_all, datetime(2000, 1, 1, tzinfo=JST), end_dt)
-    
-    avg_daily = fee_7d_usd / 7 if fee_7d_usd > 0 else 0.0
-    weekly_apr = fee_7d_usd * 52 if fee_7d_usd > 0 else 0.0
-    
+    # all-time fees（2000年〜）
+    fee_all_time_usd, _ = calc_fees_usd_in_window_from_cash_flows(
+        pos_list_all,
+        datetime(2000, 1, 1, tzinfo=JST),
+        end_dt
+    )
+
+    # Net合算（APRの分母として内部利用のみ）
+    net_total = 0.0
+    for pos in (pos_list_open if isinstance(pos_list_open, list) else []):
+        net_total += float(calc_net_usd(pos) or 0.0)
+
+    avg_daily = fee_7d_usd / 7.0
+    weekly_apr_pct = (fee_7d_usd / net_total) * 52 * 100 if net_total > 0 else 0.0
+
     report = (
         "CBC Liquidity Mining — Weekly\n"
         f"Week Ending: {end_dt.strftime('%Y-%m-%d %H:%M')} JST\n"
         f"Period: {start_dt.strftime('%Y-%m-%d %H:%M')} → {end_dt.strftime('%Y-%m-%d %H:%M')} JST\n"
         "────────────────\n"
-        f"SAFE\n{safe}\n\n"
+        f"SAFE\n{h(safe)}\n\n"
         f"・7日確定手数料 {fmt_money(fee_7d_usd)}\n"
         f"・平均確定手数料 {fmt_money(avg_daily)}/day\n"
-        f"・Weekly APR（確定基準） {fmt_pct(weekly_apr)}\n"
+        f"・Weekly APR（確定基準） {fmt_pct(weekly_apr_pct)}\n"
         f"・Transactions（7d） {tx_7d}\n"
         f"・累計確定（All-time） {fmt_money(fee_all_time_usd)}\n"
     )
-
     return report
-
 # ===============================
 # main
 # ===============================
