@@ -504,10 +504,10 @@ def build_daily_report_for_safe(safe: str):
 # Weekly (FINAL: avg/day, no prev-week)
 # ===============================
 def build_weekly_report_for_safe(safe: str) -> str:
-    end_dt = get_period_end_jst()                 # 今日 09:00 JST
-    start_dt = end_dt - timedelta(days=7)         # 7日窓
+    end_dt = get_period_end_jst()
+    start_dt = end_dt - timedelta(days=7)
 
-    # open + exited 両方のcash_flowsを対象にする（確定ログ取りこぼし防止）
+    # open + exited 両方取得
     positions_open = fetch_positions(safe, active=True)
     positions_exited = fetch_positions(safe, active=False)
 
@@ -515,28 +515,33 @@ def build_weekly_report_for_safe(safe: str) -> str:
     pos_list_exited = _normalize_positions(positions_exited)
 
     pos_list_all = []
-    pos_list_all += pos_list_open
-    pos_list_all += pos_list_exited
-    # --- DEBUG: fees-collected を7日窓で拾えてるか確認（Logs出力のみ） ---
+    pos_list_all.extend(pos_list_open)
+    pos_list_all.extend(pos_list_exited)
 
-    # 7d fees-collected
-    fee_7d_usd, tx_7d = calc_fees_usd_in_window_from_cash_flows(pos_list_all, start_dt, end_dt)
+    # 7日確定手数料
+    fee_7d_usd, tx_7d = calc_fees_usd_in_window_from_cash_flows(
+        pos_list_all,
+        start_dt,
+        end_dt,
+    )
+
     avg_daily_fee = fee_7d_usd / 7 if fee_7d_usd > 0 else 0.0
 
-    # Net合算（現状：activeのみで合算＝Dailyと整合）
+    # Net合算（activeのみ）
     net_total = 0.0
     for pos in pos_list_open:
         net_total += float(calc_net_usd(pos) or 0.0)
 
     weekly_apr = calc_weekly_apr_a(fee_7d_usd, net_total)
 
-    # All-time fees-collected
+    # All-time確定
     all_time_fee = calc_all_time_fees_usd_from_cash_flows(pos_list_all)
 
     report = (
         "CBC Liquidity Mining — Weekly\n"
         f"Week Ending: {end_dt.strftime('%Y-%m-%d %H:%M')} JST\n"
-        f"Period: {start_dt.strftime('%Y-%m-%d %H:%M')} → {end_dt.strftime('%Y-%m-%d %H:%M')} JST\n"
+        f"Period: {start_dt.strftime('%Y-%m-%d %H:%M')} → "
+        f"{end_dt.strftime('%Y-%m-%d %H:%M')} JST\n"
         "────────────────\n"
         f"SAFE\n{h(safe)}\n\n"
         f"・7日確定手数料 {fmt_money(fee_7d_usd)}\n"
@@ -545,6 +550,7 @@ def build_weekly_report_for_safe(safe: str) -> str:
         f"・Transactions（7d） {tx_7d}\n"
         f"・累計確定（All-time） {fmt_money(all_time_fee)}\n"
     )
+
     return report
 
 # ===============================
