@@ -407,6 +407,28 @@ def build_daily_report_for_safe(safe: str):
 
     return report
 
+    # ==========================
+    # Weekly
+    # ==========================
+    def build_weekly_report_for_safe(safe: str) -> str:
+    end_dt = get_period_end_jst()
+    start_dt = end_dt - timedelta(days=7)
+
+    report = (
+        "CBC Liquidity Mining — Weekly\n"
+        f"Week Ending: {end_dt.strftime('%Y-%m-%d %H:%M')} JST\n"
+        f"Period: {start_dt.strftime('%Y-%m-%d %H:%M')} → {end_dt.strftime('%Y-%m-%d %H:%M')} JST\n"
+        "────────────────\n"
+        f"SAFE\n{safe}\n\n"
+        "・7日確定手数料 $0.00\n"
+        "・Weekly APR（確定基準） 0.00%\n"
+        "・Transactions（7d） 0\n"
+        "・前週比（確定収益） N/A\n"
+        "・先週との差額（確定） N/A\n"
+        "・累計確定（All-time） N/A\n"
+    )
+    return report
+
 
 # ----------------
 # main
