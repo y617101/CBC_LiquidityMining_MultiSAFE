@@ -407,9 +407,9 @@ def build_daily_report_for_safe(safe: str):
 
     return report
 
-    # ==========================
-    # Weekly
-    # ==========================
+# ==========================
+# Weekly
+# ==========================
 def build_weekly_report_for_safe(safe: str) -> str:
     end_dt = get_period_end_jst()
     start_dt = end_dt - timedelta(days=7)
