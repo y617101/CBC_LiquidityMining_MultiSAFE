@@ -1,4 +1,7 @@
 import os
+
+def get_report_mode() -> str:
+    return (os.getenv("REPORT_MODE") or "DAILY").strip().upper()
 import json
 import html
 import requests
@@ -409,6 +412,8 @@ def build_daily_report_for_safe(safe: str):
 # main
 # ----------------
 def main():
+    mode = get_report_mode()
+    print(f"DBG REPORT_MODE={mode}")
     cfg = load_config()
     safes = cfg.get("safes") or []
     if not safes:
@@ -426,7 +431,11 @@ def main():
             continue
 
         try:
-            report = build_daily_report_for_safe(safe)
+            if mode == "WEEKLY":
+                report = build_weekly_report_for_safe(safe)
+            else:
+                report = build_daily_report_for_safe(safe)
+                
             send_telegram(report, chat_id)
 
         except Exception as e:
