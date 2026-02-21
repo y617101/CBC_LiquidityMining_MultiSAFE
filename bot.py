@@ -552,6 +552,7 @@ def build_weekly_report_for_safe(safe: str) -> str:
 
     # 7d fees
     fee_7d_usd, tx_7d = calc_fees_usd_in_window_from_cash_flows(pos_list_all, start_dt, end_dt)
+    avg_per_day = fee_7d_usd / 7.0
 
     # all-time fees（2000年〜）
     fee_all_time_usd, _ = calc_fees_usd_in_window_from_cash_flows(
