@@ -155,22 +155,31 @@ def calc_fees_in_window(pos_list_all, start_dt, end_dt):
 # ================================
 # Daily
 # ================================
-def build_daily_report_for_safe(safe):
+# ================================
+# Daily (FINAL layout: same as your "完成版イメージ")
+# ================================
+def build_daily_report_for_safe(safe: str) -> str:
     end_dt = get_period_end_jst()
     start_dt = end_dt - timedelta(days=1)
 
     pos_open = _normalize_positions(fetch_positions(safe, True))
     pos_exited = _normalize_positions(fetch_positions(safe, False))
+    pos_all = (pos_open or []) + (pos_exited or [])
 
-    pos_all = pos_open + pos_exited
-
+    # 24h fees (claimed)
     fee_24h, tx_24h = calc_fees_in_window(pos_all, start_dt, end_dt)
 
-    net_total = sum(calc_net_usd(p) for p in pos_open)
-    unclaimed_total = sum(to_f(p.get("fees_value"), 0.0) or 0.0 for p in pos_open)
+    # Net + Unclaimed (fees_value)
+    net_total = 0.0
+    unclaimed_total = 0.0
+    for p in (pos_open or []):
+        net_total += float(calc_net_usd(p) or 0.0)
+        unclaimed_total += float(to_f(p.get("fees_value"), 0.0) or 0.0)
 
-    apr_base = fee_24h + unclaimed_total
+    apr_base = float(fee_24h or 0.0) + float(unclaimed_total or 0.0)
     safe_apr = (apr_base / net_total * 365 * 100) if net_total > 0 else 0.0
+
+    sep = "────────────────"
 
     report = (
         "CBC Liquidity Mining — Daily\n\n"
@@ -178,10 +187,10 @@ def build_daily_report_for_safe(safe):
         f"{h(safe)}\n\n"
         "Net合算\n"
         f"{fmt_money(net_total)}\n\n"
-        "────────────────\n"
+        f"{sep}\n"
         "推定総収益（24h＋未Claim）\n"
         f"{fmt_money(apr_base)}\n"
-        "────────────────\n\n"
+        f"{sep}\n\n"
         "確定手数料（24h）\n"
         f"{fmt_money(fee_24h)}\n\n"
         "蓄積手数料（未Claim）\n"
@@ -192,21 +201,23 @@ def build_daily_report_for_safe(safe):
         f"{tx_24h}\n\n"
     )
 
-    for p in pos_open:
+    # NFT blocks
+    for p in (pos_open or []):
         nft_id = str(p.get("nft_id", "UNKNOWN"))
         status = "OUT OF RANGE" if p.get("in_range") is False else "ACTIVE"
-        net = calc_net_usd(p)
-        fees_value = to_f(p.get("fees_value"), 0.0) or 0.0
-        nft_apr = ((fees_value) / net * 365 * 100) if net > 0 else 0.0
+
+        net = float(calc_net_usd(p) or 0.0)
+        fees_value = float(to_f(p.get("fees_value"), 0.0) or 0.0)
+        nft_apr = (fees_value / net * 365 * 100) if net > 0 else 0.0
 
         nft_url = f"https://app.uniswap.org/positions/v3/base/{nft_id}"
         nft_link = f'<a href="{h(nft_url)}">{h(nft_id)}</a>'
 
         report += (
-            "────────────────\n"
+            f"{sep}\n"
             f"NFT {nft_link}\n"
             f"Status {h(status)}\n"
-            "────────────────\n\n"
+            f"{sep}\n\n"
             "Net\n"
             f"{fmt_money(net)}\n\n"
             "蓄積手数料（未Claim）\n"
