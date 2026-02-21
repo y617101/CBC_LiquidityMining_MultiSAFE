@@ -3,12 +3,12 @@
     {
       "name": "CBC_001",
       "safe_address": "0xb5B95473C08D0046DD8CE1A6D28258E82095f9AF",
-      "telegram_chat_id": "@CBC_LM_TEST_Multi"
+      "telegram_chat_id": "@cbc_liquidity_001"
     },
     {
       "name": "CBC_002",
       "safe_address": "0xB1A76A21769a90Ce4fE0edC3DBBae0b9E7689734",
-      "telegram_chat_id": "@CBC_LM_TEST_Multi"
+      "telegram_chat_id": "@Ccbc_liquidity_001"
     }
   ]
 }
