@@ -569,17 +569,23 @@ def build_weekly_report_for_safe(safe: str) -> str:
     weekly_apr_pct = (fee_7d_usd / net_total) * 52 * 100 if net_total > 0 else 0.0
 
     report = (
-        "CBC Liquidity Mining — Weekly\n"
-        f"Week Ending: {end_dt.strftime('%Y-%m-%d %H:%M')} JST\n"
-        f"Period: {start_dt.strftime('%Y-%m-%d %H:%M')} → {end_dt.strftime('%Y-%m-%d %H:%M')} JST\n"
-        "────────────────\n"
-        f"SAFE\n{h(safe)}\n\n"
-        f"・7日確定手数料 {fmt_money(fee_7d_usd)}\n"
-        f"・平均確定手数料 {fmt_money(avg_daily)}/day\n"
-        f"・Weekly APR（確定基準） {fmt_pct(weekly_apr_pct)}\n"
-        f"・Transactions（7d） {tx_7d}\n"
-        f"・累計確定（All-time） {fmt_money(fee_all_time_usd)}\n"
-    )
+    "CBC Liquidity Mining — Weekly\n\n"
+    "SAFE\n"
+    f"{safe}\n\n\n"
+    "7日確定手数料\n"
+    f"{fmt_money(fee_7d_usd)}\n\n"
+    "平均確定手数料\n"
+    f"{fmt_money(avg_per_day)} / day\n\n"
+    "Weekly APR\n"
+    f"{fmt_pct(weekly_apr_pct)}\n\n"
+    "Transactions（7d）\n"
+    f"{fee_7d_count}\n\n"
+    "累計確定（All-time）\n"
+    f"{fmt_money(total_all_time_usd)}\n\n\n"
+    "Period\n"
+    f"{start_dt.strftime('%Y-%m-%d')} → {end_dt.strftime('%Y-%m-%d')}\n"
+    "09:00 JST"
+)
     return report
 # ===============================
 # main
