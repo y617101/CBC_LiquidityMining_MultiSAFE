@@ -524,7 +524,7 @@ def build_daily_report_for_safe(safe: str):
     return report
 
 # ===============================
-# Weekly (FINAL: avg/day, no prev-week)
+# Weekly (FINAL: avg/day, no Week Ending, 09:00 only at end)
 # ===============================
 def build_weekly_report_for_safe(safe: str) -> str:
     end_dt = get_period_end_jst()
@@ -533,60 +533,51 @@ def build_weekly_report_for_safe(safe: str) -> str:
     positions_open = fetch_positions(safe, active=True)
     positions_exited = fetch_positions(safe, active=False)
 
-    pos_list_open = (
-        positions_open
-        if isinstance(positions_open, list)
-        else positions_open.get("positions", positions_open.get("data", []))
-    )
-    pos_list_exited = (
-        positions_exited
-        if isinstance(positions_exited, list)
-        else positions_exited.get("positions", positions_exited.get("data", []))
-    )
+    # ✅ Dailyと同じ正規化を使う（形状ブレを避ける）
+    pos_list_open = _normalize_positions(positions_open)
+    pos_list_exited = _normalize_positions(positions_exited)
 
     pos_list_all = []
-    if isinstance(pos_list_open, list):
-        pos_list_all += pos_list_open
-    if isinstance(pos_list_exited, list):
-        pos_list_all += pos_list_exited
+    pos_list_all += (pos_list_open or [])
+    pos_list_all += (pos_list_exited or [])
 
     # 7d fees
     fee_7d_usd, tx_7d = calc_fees_usd_in_window_from_cash_flows(pos_list_all, start_dt, end_dt)
-    avg_per_day = fee_7d_usd / 7.0
+    avg_per_day = (fee_7d_usd / 7.0) if fee_7d_usd else 0.0
 
     # all-time fees（2000年〜）
     fee_all_time_usd, _ = calc_fees_usd_in_window_from_cash_flows(
         pos_list_all,
         datetime(2000, 1, 1, tzinfo=JST),
-        end_dt
+        end_dt,
     )
 
-    # Net合算（APRの分母として内部利用のみ）
+    # Net合算（APR分母：openのみ）
     net_total = 0.0
-    for pos in (pos_list_open if isinstance(pos_list_open, list) else []):
+    for pos in (pos_list_open or []):
         net_total += float(calc_net_usd(pos) or 0.0)
 
-    avg_daily = fee_7d_usd / 7.0
     weekly_apr_pct = (fee_7d_usd / net_total) * 52 * 100 if net_total > 0 else 0.0
 
     report = (
-    "CBC Liquidity Mining — Weekly\n\n"
-    "SAFE\n"
-    f"{safe}\n\n\n"
-    "7日確定手数料\n"
-    f"{fmt_money(fee_7d_usd)}\n\n"
-    "平均確定手数料\n"
-    f"{fmt_money(avg_per_day)} / day\n\n"
-    "Weekly APR\n"
-    f"{fmt_pct(weekly_apr_pct)}\n\n"
-    "Transactions（7d）\n"
-    f"{fee_7d_count}\n\n"
-    "累計確定（All-time）\n"
-    f"{fmt_money(total_all_time_usd)}\n\n\n"
-    "Period\n"
-    f"{start_dt.strftime('%Y-%m-%d')} → {end_dt.strftime('%Y-%m-%d')}\n"
-    "09:00 JST"
-)
+        "CBC Liquidity Mining — Weekly\n\n"
+        "SAFE\n"
+        f"{h(safe)}\n\n\n"
+        "7日確定手数料\n"
+        f"{fmt_money(fee_7d_usd)}\n\n"
+        "平均確定手数料\n"
+        f"{fmt_money(avg_per_day)} / day\n\n"
+        "Weekly APR\n"
+        f"{fmt_pct(weekly_apr_pct)}\n\n"
+        "Transactions（7d）\n"
+        f"{tx_7d}\n\n"
+        "累計確定（All-time）\n"
+        f"{fmt_money(fee_all_time_usd)}\n\n\n"
+        "Period\n"
+        f"{start_dt.strftime('%Y-%m-%d')} → {end_dt.strftime('%Y-%m-%d')}\n"
+        "09:00 JST"
+    )
+
     return report
 # ===============================
 # main
