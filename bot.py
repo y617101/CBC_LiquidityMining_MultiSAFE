@@ -43,7 +43,7 @@ def dbg(*args):
         print(*args, flush=True)
 
 def h(x) -> str:
-    """HTML escape for Telegram parse_mode=HTML safety."""
+    """(Legacy) HTML escape. Kept for compatibility."""
     return html.escape(str(x), quote=True)
 
 def to_f(x, default=None):
@@ -53,10 +53,10 @@ def to_f(x, default=None):
         return default
 
 def fmt_money(x):
-    return "N/A" if x is None else f"${x:,.2f}"
+    return "N/A" if x is None else f"${float(x):,.2f}"
 
 def fmt_pct(x):
-    return "N/A" if x is None else f"{x:.2f}%"
+    return "N/A" if x is None else f"{float(x):.2f}%"
 
 def _lower(s):
     return str(s or "").strip().lower()
@@ -107,7 +107,7 @@ def calc_weekly_apr_a(fee_7d_usd, net_usd):
     return (fee_7d_usd / net_usd) * (365 / 7) * 100
 
 # ================================
-# Telegram
+# Telegram (Plain text for copyability)
 # ================================
 def send_telegram(text: str, chat_id: str = None):
     token = os.getenv("TG_BOT_TOKEN")
@@ -151,7 +151,7 @@ def send_telegram(text: str, chat_id: str = None):
             json={
                 "chat_id": chat_id,
                 "text": chunk,
-                "parse_mode": "HTML",
+                # parse_mode omitted to keep text fully copyable
                 "disable_web_page_preview": True,
             },
             timeout=30,
@@ -268,20 +268,29 @@ def calc_net_usd(pos):
     return pooled_usd - debt_usd
 
 # ================================
-# 24h fee calc (Daily existing)
+# 24h fee calc (Daily existing logic)
 # ================================
-def calc_fee_usd_in_window_from_cash_flows(pos_list_all, start_dt: datetime, end_dt: datetime):
+def calc_fee_usd_24h_from_cash_flows(pos_list_all, now_dt: datetime):
     """
-    期間窓で「確定手数料USD」を集計（Dailyと同じ拾い方）
+    24h窓（JST 09:00 → 翌09:00）で「確定手数料USD」を集計（Daily既存と同じ拾い方）
     - type に "fee"/"collect"/"claim" を含むものを対象
     - amount_usd が無ければ prices×数量 でフォールバック
+    Returns:
+      total_usd, total_count, fee_by_nft, count_by_nft, start_dt, end_dt
     """
+    end_dt = get_period_end_jst(now_dt)
+    start_dt = end_dt - timedelta(days=1)
+
     total = 0.0
     total_count = 0
+    fee_by_nft = {}
+    count_by_nft = {}
 
     for pos in (pos_list_all or []):
         if not isinstance(pos, dict):
             continue
+
+        nft_id = str(pos.get("nft_id", "UNKNOWN"))
 
         cfs = pos.get("cash_flows") or []
         if not isinstance(cfs, list):
@@ -293,7 +302,7 @@ def calc_fee_usd_in_window_from_cash_flows(pos_list_all, start_dt: datetime, end
 
             t = _lower(cf.get("type"))
 
-            # Dailyと同じ判定（ここがキモ）
+            # ✅ Dailyと同じ判定（ロジック固定）
             if not any(k in t for k in ("fee", "collect", "claim")):
                 continue
 
@@ -307,7 +316,7 @@ def calc_fee_usd_in_window_from_cash_flows(pos_list_all, start_dt: datetime, end
 
             amt_usd = to_f(cf.get("amount_usd"))
 
-            # Dailyと同じフォールバック
+            # ✅ Dailyと同じフォールバック（ロジック固定）
             if amt_usd is None:
                 prices = cf.get("prices") or {}
                 p0 = to_f((prices.get("token0") or {}).get("usd")) or 0.0
@@ -341,10 +350,13 @@ def calc_fee_usd_in_window_from_cash_flows(pos_list_all, start_dt: datetime, end
             total += amt_usd
             total_count += 1
 
-    return total, total_count
+            fee_by_nft[nft_id] = float(fee_by_nft.get(nft_id, 0.0) or 0.0) + amt_usd
+            count_by_nft[nft_id] = int(count_by_nft.get(nft_id, 0) or 0) + 1
+
+    return total, total_count, fee_by_nft, count_by_nft, start_dt, end_dt
 
 # ================================
-# Weekly fee calc (FINAL)
+# Weekly fee calc (FINAL logic)
 # ================================
 def calc_fees_usd_in_window_from_cash_flows(pos_list_all, start_dt: datetime, end_dt: datetime):
     """
@@ -420,30 +432,6 @@ def calc_fees_usd_in_window_from_cash_flows(pos_list_all, start_dt: datetime, en
 
     return total, count
 
-def calc_all_time_fees_usd_from_cash_flows(pos_list_all):
-    total = 0.0
-    for pos in (pos_list_all or []):
-        if not isinstance(pos, dict):
-            continue
-        cfs = pos.get("cash_flows") or []
-        if not isinstance(cfs, list):
-            continue
-        for cf in cfs:
-            if not isinstance(cf, dict):
-                continue
-            if _lower(cf.get("type")) != "fees-collected":
-                continue
-            amt_usd = to_f(cf.get("amount_usd"))
-            if amt_usd is None:
-                continue
-            try:
-                amt_usd = float(amt_usd)
-            except Exception:
-                continue
-            if amt_usd > 0:
-                total += amt_usd
-    return total
-
 # ================================
 # config
 # ================================
@@ -453,7 +441,7 @@ def load_config():
         return json.load(f)
 
 # ================================
-# Daily (existing, kept)
+# Daily (layout updated, logic fixed)
 # ================================
 def build_daily_report_for_safe(safe: str):
     positions_open = fetch_positions(safe, active=True)
@@ -467,9 +455,9 @@ def build_daily_report_for_safe(safe: str):
     pos_list_all += pos_list_exited
 
     now_dt = datetime.now(JST)
-    fee_usd, fee_count, fee_by_nft, _, _, end_dt = calc_fee_usd_24h_from_cash_flows(pos_list_all, now_dt)
+    fee_usd, fee_count, fee_by_nft, _, start_dt, end_dt = calc_fee_usd_24h_from_cash_flows(pos_list_all, now_dt)
 
-    nft_lines = []
+    nft_blocks = []
     net_total = 0.0
     unclaimed_total = 0.0  # fees_value合算(USD)
 
@@ -487,44 +475,69 @@ def build_daily_report_for_safe(safe: str):
 
         fee_usd_nft = float(fee_by_nft.get(nft_id, 0.0) or 0.0)
 
-        # NEW APR（NFT）: (24h確定 + 未Claim) / Net * 365
+        # ✅ ロジック固定：NFT APR = (24h確定 + 未Claim) / Net * 365
         nft_apr_base = fee_usd_nft + fees_value
         nft_fee_apr = calc_fee_apr_a(nft_apr_base, net)
 
         nft_url = f"https://app.uniswap.org/positions/v3/base/{nft_id}"
-        nft_link = f'<a href="{h(nft_url)}">{h(nft_id)}</a>'
 
-        nft_lines.append(
+        nft_blocks.append(
             "\n"
-            f"NFT {nft_link}\n"
-            f"Status: {h(status)}\n"
-            f"Net: {fmt_money(net)}\n"
-            f"蓄積手数料（未Claim） {fmt_money(fees_value)}\n"
-            f"Fee APR: {fmt_pct(nft_fee_apr)}\n"
+            "────────────────\n"
+            f"NFT {nft_id} ({nft_url})\n"
+            f"Status {status}\n"
+            "────────────────\n"
+            "\n"
+            "Net\n"
+            f"{fmt_money(net)}\n"
+            "\n"
+            "蓄積手数料（未Claim）\n"
+            f"{fmt_money(fees_value)}\n"
+            "\n"
+            "Fee APR\n"
+            f"{fmt_pct(nft_fee_apr)}\n"
         )
 
-    # SAFE APR（NEW）: (24h確定 + 未Claim合計) / Net合算 * 365
+    # ✅ ロジック固定：SAFE APR = (24h確定 + 未Claim合計) / Net合算 * 365
     apr_base_usd = float(fee_usd or 0.0) + float(unclaimed_total or 0.0)
     safe_fee_apr = calc_fee_apr_a(apr_base_usd, net_total)
 
     report = (
         "CBC Liquidity Mining — Daily\n"
-        f"Period End: {end_dt.strftime('%Y-%m-%d %H:%M')} JST\n"
+        "\n"
+        "SAFE\n"
+        f"{safe}\n"
+        "\n"
+        "Net合算\n"
+        f"{fmt_money(net_total)}\n"
+        "\n"
         "────────────────\n"
-        f"SAFE\n{h(safe)}\n\n"
-        f"・推定総収益（24h＋未Claim） {fmt_money(apr_base_usd)}\n"
-        f"・確定手数料（24h） {fmt_money(fee_usd)}\n"
-        f"・蓄積手数料（未Claim） {fmt_money(unclaimed_total)}\n"
-        f"・Fee APR(SAFE) {fmt_pct(safe_fee_apr)}\n\n"
-        f"・Net合算 {fmt_money(net_total)}\n"
-        f"・Transactions {fee_count}\n"
-        + "".join(nft_lines)
+        "推定総収益（24h＋未Claim）\n"
+        f"{fmt_money(apr_base_usd)}\n"
+        "────────────────\n"
+        "\n"
+        "確定手数料（24h）\n"
+        f"{fmt_money(fee_usd)}\n"
+        "\n"
+        "蓄積手数料（未Claim）\n"
+        f"{fmt_money(unclaimed_total)}\n"
+        "\n"
+        "Fee APR (SAFE)\n"
+        f"{fmt_pct(safe_fee_apr)}\n"
+        "\n"
+        "Transactions\n"
+        f"{fee_count}\n"
+        + "".join(nft_blocks) +
+        "\n"
+        "Period\n"
+        f"{start_dt.strftime('%Y-%m-%d')} → {end_dt.strftime('%Y-%m-%d')}\n"
+        "09:00 JST\n"
     )
 
     return report
 
 # ===============================
-# Weekly (FINAL: avg/day, no prev-week)
+# Weekly (layout updated, logic fixed)
 # ===============================
 def build_weekly_report_for_safe(safe: str) -> str:
     end_dt = get_period_end_jst()
@@ -550,17 +563,17 @@ def build_weekly_report_for_safe(safe: str) -> str:
     if isinstance(pos_list_exited, list):
         pos_list_all += pos_list_exited
 
-    # 7d fees
+    # ✅ ロジック固定：7d fees（fees-collected / claimed-fees）
     fee_7d_usd, tx_7d = calc_fees_usd_in_window_from_cash_flows(pos_list_all, start_dt, end_dt)
 
-    # all-time fees（2000年〜）
+    # ✅ ロジック固定：all-time fees（2000年〜）
     fee_all_time_usd, _ = calc_fees_usd_in_window_from_cash_flows(
         pos_list_all,
         datetime(2000, 1, 1, tzinfo=JST),
         end_dt
     )
 
-    # Net合算（APRの分母として内部利用のみ）
+    # ✅ ロジック固定：Net合算（分母：openのみ）
     net_total = 0.0
     for pos in (pos_list_open if isinstance(pos_list_open, list) else []):
         net_total += float(calc_net_usd(pos) or 0.0)
@@ -570,35 +583,52 @@ def build_weekly_report_for_safe(safe: str) -> str:
 
     report = (
         "CBC Liquidity Mining — Weekly\n"
-        f"Week Ending: {end_dt.strftime('%Y-%m-%d %H:%M')} JST\n"
-        f"Period: {start_dt.strftime('%Y-%m-%d %H:%M')} → {end_dt.strftime('%Y-%m-%d %H:%M')} JST\n"
-        "────────────────\n"
-        f"SAFE\n{h(safe)}\n\n"
-        f"・7日確定手数料 {fmt_money(fee_7d_usd)}\n"
-        f"・平均確定手数料 {fmt_money(avg_daily)}/day\n"
-        f"・Weekly APR（確定基準） {fmt_pct(weekly_apr_pct)}\n"
-        f"・Transactions（7d） {tx_7d}\n"
-        f"・累計確定（All-time） {fmt_money(fee_all_time_usd)}\n"
+        "\n"
+        "SAFE\n"
+        f"{safe}\n"
+        "\n"
+        "———————\n"
+        "7日確定手数料\n"
+        f"{fmt_money(fee_7d_usd)}\n"
+        "———————\n"
+        "\n"
+        "平均確定手数料\n"
+        f"{fmt_money(avg_daily)} / day\n"
+        "\n"
+        "Weekly APR\n"
+        f"{fmt_pct(weekly_apr_pct)}\n"
+        "\n"
+        "Transactions（7d）\n"
+        f"{tx_7d}\n"
+        "———————\n"
+        "累計確定（All-time）\n"
+        f"{fmt_money(fee_all_time_usd)}\n"
+        "———————\n"
+        "\n"
+        "Period\n"
+        f"{start_dt.strftime('%Y-%m-%d')} → {end_dt.strftime('%Y-%m-%d')}\n"
+        "09:00 JST\n"
     )
     return report
+
 # ===============================
 # main
 # ===============================
 def main():
     mode = get_report_mode()
     print(f"DBG REPORT_MODE={mode}", flush=True)
-    
+
     cfg = load_config()
     safes = cfg.get("safes") or []
     if not safes:
         print("config.json: safes is empty", flush=True)
         return
-        
+
     for s in safes:
         name = s.get("name") or "NONAME"
         safe = s.get("safe_address")
         chat_id = s.get("telegram_chat_id")
-        
+
         if not safe or not chat_id:
             print(f"skip: missing safe/chat_id name={name}", flush=True)
             continue
@@ -614,7 +644,13 @@ def main():
         except Exception as e:
             print(f"error name={name} safe={safe}: {e}", flush=True)
             try:
-                send_telegram(f"CBC LM ERROR\nNAME: {h(name)}\nSAFE: {h(safe)}\n\n{h(e)}", chat_id)
+                send_telegram(
+                    f"CBC LM ERROR\n"
+                    f"NAME\n{name}\n\n"
+                    f"SAFE\n{safe}\n\n"
+                    f"ERROR\n{e}\n",
+                    chat_id,
+                )
             except Exception:
                 pass
 
