@@ -485,10 +485,18 @@ def load_config():
 # ================================
 # Daily (layout updated, logic fixed)
 # ================================
-def build_daily_report_for_safe(safe: str, end_dt=None):
+def build_daily_report_for_safe(safe: str, end_dt=None, block_level: str = "FULL"):
+    """
+    block_level:
+      - "FULL"    : NFTブロックを詳細表示（今の形）
+      - "COMPACT" : NFTブロックを短く表示
+      - "NONE"    : NFTブロックを出さない（SAFE集計だけ）
+    """
     if end_dt is None:
         end_dt = get_period_end_jst()
+
     start_dt = end_dt - timedelta(days=1)
+
     positions_open = fetch_positions(safe, active=True)
     positions_exited = fetch_positions(safe, active=False)
 
@@ -499,8 +507,12 @@ def build_daily_report_for_safe(safe: str, end_dt=None):
     pos_list_all += pos_list_open
     pos_list_all += pos_list_exited
 
-    now_dt = datetime.now(JST)
-    fee_usd, fee_count, fee_by_nft, _, start_dt, end_dt = calc_fee_usd_24h_from_cash_flows(pos_list_all, now_dt)
+    # ★ここが重要：バックフィルでも過去日で計算できるようにする
+    now_dt = end_dt
+
+    fee_usd, fee_count, fee_by_nft, _, start_dt, end_dt = calc_fee_usd_24h_from_cash_flows(
+        pos_list_all, now_dt
+    )
 
     nft_blocks = []
     net_total = 0.0
@@ -520,28 +532,41 @@ def build_daily_report_for_safe(safe: str, end_dt=None):
 
         fee_usd_nft = float(fee_by_nft.get(nft_id, 0.0) or 0.0)
 
-        # ✅ ロジック固定：NFT APR = (24h確定 + 未Claim) / Net * 365
+        # NFT APR = (24h確定 + 未Claim) / Net * 365
         nft_apr_base = fee_usd_nft + fees_value
         nft_fee_apr = calc_fee_apr_a(nft_apr_base, net)
 
+        # ブロック度：NONEならNFT行を出さない
+        if (block_level or "").upper() == "NONE":
+            continue
+
         nft_url = f"https://app.uniswap.org/positions/v3/base/{nft_id}"
         nft_link = f'<a href="{h(nft_url)}">{h(nft_id)}</a>'
-        
-        nft_blocks.append(
-            "\n"
-            "———————\n"
-            f"NFT {nft_link}\n"
-            f"Status {h(status)}\n"
-            "———————\n"
-            "Net\n"
-            f"{fmt_money(net)}\n\n"
-            "蓄積手数料（未Claim）\n"
-            f"{fmt_money(fees_value)}\n\n"
-            "Fee APR\n"
-            f"{fmt_pct(nft_fee_apr)}\n"
-        )
 
-    # ✅ ロジック固定：SAFE APR = (24h確定 + 未Claim合計) / Net合算 * 365
+        lvl = (block_level or "FULL").upper()
+
+        if lvl == "COMPACT":
+            nft_blocks.append(
+                "\n"
+                f"NFT {nft_link} / {h(status)}\n"
+                f"Net {fmt_money(net)} | 未Claim {fmt_money(fees_value)} | APR {fmt_pct(nft_fee_apr)}\n"
+            )
+        else:  # FULL
+            nft_blocks.append(
+                "\n"
+                "———————\n"
+                f"NFT {nft_link}\n"
+                f"Status {h(status)}\n"
+                "———————\n"
+                "Net\n"
+                f"{fmt_money(net)}\n\n"
+                "蓄積手数料（未Claim）\n"
+                f"{fmt_money(fees_value)}\n\n"
+                "Fee APR\n"
+                f"{fmt_pct(nft_fee_apr)}\n"
+            )
+
+    # SAFE APR = (24h確定 + 未Claim合計) / Net合算 * 365
     apr_base_usd = float(fee_usd or 0.0) + float(unclaimed_total or 0.0)
     safe_fee_apr = calc_fee_apr_a(apr_base_usd, net_total)
 
@@ -776,26 +801,39 @@ def main():
             if mode == "WEEKLY":
                 report = build_weekly_report_for_safe(safe)
                 send_telegram(report, chat_id)
+
             else:
-                backfill_once = (os.getenv("BACKFILL_ONCE") or "").strip() == "1"
-                backfill_days = int(os.getenv("BACKFILL_DAYS") or "0")
-                
+                # ===== Backfill flags (read from env) =====
+                backfill_once_raw = os.getenv("BACKFILL_ONCE")
+                backfill_days_raw = os.getenv("BACKFILL_DAYS")
+
+                backfill_once = (backfill_once_raw or "").strip() == "1"
+                backfill_days = int((backfill_days_raw or "0").strip() or "0")
+
+                print(f"DBG BACKFILL_ONCE raw={backfill_once_raw!r} parsed={backfill_once}", flush=True)
+                print(f"DBG BACKFILL_DAYS raw={backfill_days_raw!r} parsed={backfill_days}", flush=True)
+
                 if backfill_once and backfill_days > 0:
                     print("DBG: start backfill", flush=True)
-                    
+
+                    # 過去 → 現在（古い日から）
                     for d in range(backfill_days, 0, -1):
                         bf_end_dt = get_period_end_jst() - timedelta(days=d)
+
                         # 過去分はTelegram送らない
                         _report, fee_usd, _ = build_daily_report_for_safe(safe, bf_end_dt)
-                        
                         append_daily_wide_numbered(bf_end_dt, name, safe, fee_usd)
+
                     print("DBG: backfill done", flush=True)
-                
+
                 else:
-                    # 通常運転
+                    # ===== Normal Daily =====
                     report, fee_usd, end_dt = build_daily_report_for_safe(safe)
-                    
+
+                    # Telegram
                     send_telegram(report, chat_id)
+
+                    # Sheets
                     append_daily_wide_numbered(end_dt, name, safe, fee_usd)
 
         except Exception as e:
