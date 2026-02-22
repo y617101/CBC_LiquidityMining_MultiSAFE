@@ -874,7 +874,6 @@ def maybe_sort_daily_wide_by_date(ws):
     except Exception as e:
         print(f"DBG: sort skipped err={e}", flush=True)
 
-
 # ================================
 # main
 # ================================
@@ -883,6 +882,41 @@ def main():
     print(f"DBG REPORT_MODE={mode}", flush=True)
 
     cfg = load_config()
+    # ================================
+    # One-shot debug dump (positions cash_flows)
+    # ENV:
+    #   DBG_DUMP_NFTS=1
+    #   DBG_DUMP_SAFE=0x...
+    #   DBG_DUMP_TARGETS=4637076,4675364
+    # ================================
+    if (os.getenv("DBG_DUMP_NFTS") or "").strip() == "1":
+        dump_safe = (os.getenv("DBG_DUMP_SAFE") or "").strip()
+        dump_targets = set(
+            [x.strip() for x in (os.getenv("DBG_DUMP_TARGETS") or "").split(",") if x.strip()]
+        )
+        if not dump_safe or not dump_targets:
+            print("DBG_DUMP_NFTS=1 but missing DBG_DUMP_SAFE or DBG_DUMP_TARGETS", flush=True)
+            return
+
+        resp = fetch_positions(dump_safe, active=True)
+        pos_list = _normalize_positions(resp)
+
+        print("DBG_DUMP_SAFE", dump_safe, "targets=", sorted(list(dump_targets)), flush=True)
+
+        found = 0
+        for p in pos_list:
+            nid = str(p.get("nft_id"))
+            if nid in dump_targets:
+                found += 1
+                print("NFT", nid, "fees_value=", p.get("fees_value"), flush=True)
+                cfs = p.get("cash_flows") or []
+                for cf in cfs:
+                    t = _lower(cf.get("type"))
+                    if t in ("fees-collected", "claimed-fees", "unclaimed-fees-state"):
+                        print(" ", t, cf.get("timestamp"), cf.get("amount_usd"), cf.get("tx_hash"), flush=True)
+
+        print("DBG_DUMP_FOUND", found, flush=True)
+        return  # ★ここで終了（Telegram/Sheetsへ行かない）
     safes = cfg.get("safes") or []
     if not safes:
         print("config.json: safes is empty", flush=True)
