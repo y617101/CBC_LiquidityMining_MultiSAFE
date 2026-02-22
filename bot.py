@@ -317,8 +317,9 @@ def calc_fee_apr_a(fee_24h_usd, net_usd):
 def calc_fee_usd_24h_from_cash_flows(pos_list_all, now_dt: datetime):
     """
     24h窓（JST 09:00 → 翌09:00）で「確定手数料USD」を集計
-    - type に "fee"/"collect"/"claim" を含むものを対象（広め）
-    - amount_usd が無ければ prices×数量 でフォールバック
+    ✅ 対象typeは確定系だけに限定（ズレ防止）
+      - fees-collected
+      - claimed-fees
     """
     end_dt = get_period_end_jst(now_dt)
     start_dt = end_dt - timedelta(days=1)
@@ -342,7 +343,9 @@ def calc_fee_usd_24h_from_cash_flows(pos_list_all, now_dt: datetime):
                 continue
 
             t = _lower(cf.get("type"))
-            if not any(k in t for k in ("fee", "collect", "claim")):
+
+            # ✅ 確定系のみ（unclaimed-fees-state 等は除外）
+            if t not in ("fees-collected", "claimed-fees"):
                 continue
 
             ts = _to_ts_sec(cf.get("timestamp"))
@@ -355,6 +358,7 @@ def calc_fee_usd_24h_from_cash_flows(pos_list_all, now_dt: datetime):
 
             amt_usd = to_f(cf.get("amount_usd"))
 
+            # amount_usd 無い時だけフォールバック
             if amt_usd is None:
                 prices = cf.get("prices") or {}
                 p0 = to_f((prices.get("token0") or {}).get("usd")) or 0.0
@@ -398,7 +402,6 @@ def calc_fee_usd_24h_from_cash_flows(pos_list_all, now_dt: datetime):
 
             total += amt_usd
             total_count += 1
-
             fee_by_nft[nft_id] = float(fee_by_nft.get(nft_id, 0.0) or 0.0) + amt_usd
             count_by_nft[nft_id] = int(count_by_nft.get(nft_id, 0) or 0) + 1
 
