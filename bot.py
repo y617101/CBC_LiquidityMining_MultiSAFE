@@ -1,6 +1,7 @@
 import os
 import json
 import html
+import time
 import requests
 from datetime import datetime, timedelta, timezone
 
@@ -22,27 +23,50 @@ ADDRESS_SYMBOL_MAP = {
 
 
 # ================================
-# Google Sheets
+# Helpers
 # ================================
-def get_gsheet():
-    creds = Credentials.from_service_account_file(
-        "gcp_service_account.json",
-        scopes=["https://www.googleapis.com/auth/spreadsheets"],
-    )
-    client = gspread.authorize(creds)
-    sheet_id = os.getenv("GOOGLE_SHEET_ID")
-    if not sheet_id:
-        raise RuntimeError("ENV missing: GOOGLE_SHEET_ID")
-    return client.open_by_key(sheet_id)
+def dbg(*args):
+    if (os.getenv("DEBUG") or "").strip() == "1":
+        print(*args, flush=True)
 
 
-def test_write_one_row():
-    sh = get_gsheet()
-    tab_name = os.getenv("GOOGLE_SHEET_DAILY_TAB", "DAILY_LEDGER")
-    ws = sh.worksheet(tab_name)
-    now = datetime.now(JST).strftime("%Y-%m-%d %H:%M")
-    ws.append_row([now, "TEST", "0x0", 1.23], value_input_option="USER_ENTERED")
-    print("✅ Sheets test write OK", flush=True)
+def h(x) -> str:
+    return html.escape(str(x), quote=True)
+
+
+def to_f(x, default=None):
+    try:
+        return float(x)
+    except Exception:
+        return default
+
+
+def fmt_money(x):
+    try:
+        return f"${float(x):,.2f}"
+    except Exception:
+        return "N/A"
+
+
+def fmt_pct(x):
+    try:
+        return f"{float(x):.2f}%"
+    except Exception:
+        return "N/A"
+
+
+def _lower(s):
+    return str(s or "").strip().lower()
+
+
+def _to_ts_sec(ts):
+    try:
+        ts_i = int(ts)
+        if ts_i > 10_000_000_000:  # ms -> sec
+            ts_i //= 1000
+        return ts_i
+    except Exception:
+        return None
 
 
 # ================================
@@ -67,96 +91,52 @@ def get_period_end_jst(now: datetime | None = None) -> datetime:
 
 
 # ================================
-# Helpers
+# Sheets (429-safe wrapper)
 # ================================
-def dbg(*args):
-    if os.getenv("DEBUG") == "1":
-        print(*args, flush=True)
+def sheets_call(fn, *args, **kwargs):
+    """
+    Google Sheets APIの429を安全に吸収（指数バックオフ）
+    """
+    for attempt in range(8):
+        try:
+            return fn(*args, **kwargs)
+        except Exception as e:
+            msg = str(e)
+            if "APIError: [429]" in msg or "Quota exceeded" in msg:
+                wait = 2 ** attempt  # 1,2,4,8,16...
+                print(f"DBG: sheets 429 -> retry after {wait}s", flush=True)
+                time.sleep(wait)
+                continue
+            raise
+    raise RuntimeError("Sheets quota 429 retry exhausted")
 
 
-def h(x) -> str:
-    return html.escape(str(x), quote=True)
-
-
-def to_f(x, default=None):
-    try:
-        return float(x)
-    except Exception:
-        return default
-
-
-def fmt_money(x):
-    try:
-        return "N/A" if x is None else f"${float(x):,.2f}"
-    except Exception:
-        return "N/A"
-
-
-def fmt_pct(x):
-    try:
-        return "N/A" if x is None else f"{float(x):.2f}%"
-    except Exception:
-        return "N/A"
-
-
-def _lower(s):
-    return str(s or "").strip().lower()
-
-
-def _to_ts_sec(ts):
-    try:
-        ts_i = int(ts)
-        if ts_i > 10_000_000_000:  # ms -> sec
-            ts_i //= 1000
-        return ts_i
-    except Exception:
-        return None
-
-
-def _normalize_positions(resp) -> list[dict]:
-    if isinstance(resp, list):
-        return [p for p in resp if isinstance(p, dict)]
-    if isinstance(resp, dict):
-        data = resp.get("positions")
-        if isinstance(data, list):
-            return [p for p in data if isinstance(p, dict)]
-        data = resp.get("data")
-        if isinstance(data, list):
-            return [p for p in data if isinstance(p, dict)]
-    return []
-
-
-def calc_fee_apr_a(fee_24h_usd, net_usd):
-    # APR% = fee_usd / net_usd * 365 * 100
-    if fee_24h_usd is None or net_usd is None or net_usd <= 0:
-        return None
-    return (fee_24h_usd / net_usd) * 365 * 100
-
-
-def calc_weekly_apr_a(fee_7d_usd, net_usd):
-    # APR% = fee_7d / net * (365/7) * 100
-    if fee_7d_usd is None or net_usd is None or net_usd <= 0:
-        return None
-    return (fee_7d_usd / net_usd) * (365 / 7) * 100
+def get_gsheet():
+    creds = Credentials.from_service_account_file(
+        "gcp_service_account.json",
+        scopes=["https://www.googleapis.com/auth/spreadsheets"],
+    )
+    client = gspread.authorize(creds)
+    sheet_id = os.getenv("GOOGLE_SHEET_ID")
+    if not sheet_id:
+        raise RuntimeError("ENV missing: GOOGLE_SHEET_ID")
+    return client.open_by_key(sheet_id)
 
 
 # ================================
-# Telegram (HTML parse_mode)
+# Telegram
 # ================================
-def send_telegram(text: str, chat_id: str = None):
+def send_telegram(text: str, chat_id: str):
     token = os.getenv("TG_BOT_TOKEN")
     if not token:
         print("Telegram ENV missing: TG_BOT_TOKEN", flush=True)
         return
-
-    chat_id = chat_id or os.getenv("TG_CHAT_ID")
     if not chat_id:
-        print("Telegram ENV missing: TG_CHAT_ID", flush=True)
+        print("Telegram chat_id missing", flush=True)
         return
 
     url = f"https://api.telegram.org/bot{token}/sendMessage"
 
-    # Telegram message limit ~4096 chars; keep margin
     max_len = 3800
     s = str(text)
 
@@ -205,37 +185,23 @@ def fetch_positions(safe: str, active: bool = True):
     return r.json()
 
 
-def resolve_symbol(pos, which):
-    v = pos.get(which)
-
-    if isinstance(v, dict):
-        s = v.get("symbol") or v.get("ticker") or v.get("name")
-        if s:
-            return s
-        addr = v.get("address") or v.get("token_address") or v.get("tokenAddress")
-        if addr:
-            return ADDRESS_SYMBOL_MAP.get(str(addr).strip().lower(), "TOKEN")
-
-    if isinstance(v, str):
-        m = ADDRESS_SYMBOL_MAP.get(v.strip().lower())
-        if m:
-            return m
-
-    toks = pos.get("tokens")
-    if isinstance(toks, list) and len(toks) >= 2:
-        idx = 0 if which == "token0" else 1
-        t = toks[idx]
-        if isinstance(t, dict):
-            s = t.get("symbol") or t.get("ticker") or t.get("name")
-            if s:
-                return s
-            addr = t.get("address") or t.get("token_address") or t.get("tokenAddress")
-            if addr:
-                m = ADDRESS_SYMBOL_MAP.get(str(addr).strip().lower())
-                if m:
-                    return m
-
-    return "TOKEN"
+def _normalize_positions(resp) -> list[dict]:
+    """
+    Revert positions API sometimes returns:
+    - list
+    - dict with "positions"
+    - dict with "data"
+    """
+    if isinstance(resp, list):
+        return [p for p in resp if isinstance(p, dict)]
+    if isinstance(resp, dict):
+        data = resp.get("positions")
+        if isinstance(data, list):
+            return [p for p in data if isinstance(p, dict)]
+        data = resp.get("data")
+        if isinstance(data, list):
+            return [p for p in data if isinstance(p, dict)]
+    return []
 
 
 # ================================
@@ -307,12 +273,25 @@ def calc_net_usd(pos):
 
 
 # ================================
-# 24h fee calc (RECOMMENDED: strict types)
+# APR
+# ================================
+def calc_fee_apr_a(fee_24h_usd, net_usd):
+    """
+    APR% = fee_usd / net_usd * 365 * 100
+    """
+    if fee_24h_usd is None or net_usd is None or net_usd <= 0:
+        return None
+    return (fee_24h_usd / net_usd) * 365 * 100
+
+
+# ================================
+# 24h fee calc (Daily)
 # ================================
 def calc_fee_usd_24h_from_cash_flows(pos_list_all, now_dt: datetime):
     """
     24h窓（JST 09:00 → 翌09:00）で「確定手数料USD」を集計
-    対象 type: fees-collected / claimed-fees（誤爆防止）
+    - type に "fee"/"collect"/"claim" を含むものを対象
+    - amount_usd が無ければ prices×数量 でフォールバック
     Returns:
       total_usd, total_count, fee_by_nft, count_by_nft, start_dt, end_dt
     """
@@ -329,7 +308,6 @@ def calc_fee_usd_24h_from_cash_flows(pos_list_all, now_dt: datetime):
             continue
 
         nft_id = str(pos.get("nft_id", "UNKNOWN"))
-
         cfs = pos.get("cash_flows") or []
         if not isinstance(cfs, list):
             continue
@@ -339,9 +317,7 @@ def calc_fee_usd_24h_from_cash_flows(pos_list_all, now_dt: datetime):
                 continue
 
             t = _lower(cf.get("type"))
-
-            # ✅ おすすめ：確定手数料だけ（誤爆を防ぐ）
-            if t not in ("fees-collected", "claimed-fees"):
+            if not any(k in t for k in ("fee", "collect", "claim")):
                 continue
 
             ts = _to_ts_sec(cf.get("timestamp"))
@@ -354,7 +330,6 @@ def calc_fee_usd_24h_from_cash_flows(pos_list_all, now_dt: datetime):
 
             amt_usd = to_f(cf.get("amount_usd"))
 
-            # amount_usd が無い場合は、数量×価格で復元
             if amt_usd is None:
                 prices = cf.get("prices") or {}
                 p0 = to_f((prices.get("token0") or {}).get("usd")) or 0.0
@@ -395,13 +370,12 @@ def calc_fee_usd_24h_from_cash_flows(pos_list_all, now_dt: datetime):
 
 
 # ================================
-# Weekly fee calc (FINAL logic)
+# Weekly fee calc
 # ================================
 def calc_fees_usd_in_window_from_cash_flows(pos_list_all, start_dt: datetime, end_dt: datetime):
     """
     Sum fees (USD) in [start_dt, end_dt) from positions cash_flows.
     Target types: fees-collected / claimed-fees
-    Returns: (total_usd, tx_count)
     """
     total = 0.0
     count = 0
@@ -419,7 +393,6 @@ def calc_fees_usd_in_window_from_cash_flows(pos_list_all, start_dt: datetime, en
                 continue
 
             t = _lower(cf.get("type"))
-
             if t not in ("fees-collected", "claimed-fees"):
                 continue
 
@@ -484,12 +457,14 @@ def load_config():
 def build_daily_report_for_safe(safe: str, end_dt=None, block_level: str = "FULL"):
     """
     block_level:
-      - "FULL"    : NFTブロックを詳細表示
-      - "COMPACT" : NFTブロックを短く表示
-      - "NONE"    : NFTブロックを出さない（SAFE集計だけ）
+      - "FULL"    : NFTブロック詳細
+      - "COMPACT" : 短く
+      - "NONE"    : NFTブロック無し（SAFE集計だけ）
     """
     if end_dt is None:
         end_dt = get_period_end_jst()
+
+    start_dt = end_dt - timedelta(days=1)
 
     positions_open = fetch_positions(safe, active=True)
     positions_exited = fetch_positions(safe, active=False)
@@ -501,7 +476,7 @@ def build_daily_report_for_safe(safe: str, end_dt=None, block_level: str = "FULL
     pos_list_all += pos_list_open
     pos_list_all += pos_list_exited
 
-    # ★重要：バックフィルでも「その日の09:00基準」で計算できる
+    # ★バックフィルでも過去日の窓で計算できるように end_dt を渡す
     now_dt = end_dt
 
     fee_usd, fee_count, fee_by_nft, _, start_dt, end_dt = calc_fee_usd_24h_from_cash_flows(
@@ -511,6 +486,8 @@ def build_daily_report_for_safe(safe: str, end_dt=None, block_level: str = "FULL
     nft_blocks = []
     net_total = 0.0
     unclaimed_total = 0.0  # fees_value合算(USD)
+
+    lvl = (block_level or "FULL").upper()
 
     for pos in pos_list_open:
         nft_id = str(pos.get("nft_id", "UNKNOWN"))
@@ -526,16 +503,16 @@ def build_daily_report_for_safe(safe: str, end_dt=None, block_level: str = "FULL
 
         fee_usd_nft = float(fee_by_nft.get(nft_id, 0.0) or 0.0)
 
+        # NFT APR = (24h確定 + 未Claim) / Net * 365
         nft_apr_base = fee_usd_nft + fees_value
         nft_fee_apr = calc_fee_apr_a(nft_apr_base, net)
 
-        if (block_level or "").upper() == "NONE":
+        if lvl == "NONE":
             continue
 
         nft_url = f"https://app.uniswap.org/positions/v3/base/{nft_id}"
         nft_link = f'<a href="{h(nft_url)}">{h(nft_id)}</a>'
 
-        lvl = (block_level or "FULL").upper()
         if lvl == "COMPACT":
             nft_blocks.append(
                 "\n"
@@ -557,6 +534,7 @@ def build_daily_report_for_safe(safe: str, end_dt=None, block_level: str = "FULL
                 f"{fmt_pct(nft_fee_apr)}\n"
             )
 
+    # SAFE APR = (24h確定 + 未Claim合計) / Net合算 * 365
     apr_base_usd = float(fee_usd or 0.0) + float(unclaimed_total or 0.0)
     safe_fee_apr = calc_fee_apr_a(apr_base_usd, net_total)
 
@@ -592,12 +570,12 @@ def build_daily_report_for_safe(safe: str, end_dt=None, block_level: str = "FULL
         "09:00 JST\n"
     )
 
-    return report, fee_usd, end_dt
+    return report, float(fee_usd or 0.0), end_dt
 
 
-# ===============================
+# ================================
 # Weekly report
-# ===============================
+# ================================
 def build_weekly_report_for_safe(safe: str) -> str:
     end_dt = get_period_end_jst()
     start_dt = end_dt - timedelta(days=7)
@@ -613,11 +591,8 @@ def build_weekly_report_for_safe(safe: str) -> str:
     pos_list_all += pos_list_exited
 
     fee_7d_usd, tx_7d = calc_fees_usd_in_window_from_cash_flows(pos_list_all, start_dt, end_dt)
-
     fee_all_time_usd, _ = calc_fees_usd_in_window_from_cash_flows(
-        pos_list_all,
-        datetime(2000, 1, 1, tzinfo=JST),
-        end_dt,
+        pos_list_all, datetime(2000, 1, 1, tzinfo=JST), end_dt
     )
 
     net_total = 0.0
@@ -625,7 +600,7 @@ def build_weekly_report_for_safe(safe: str) -> str:
         net_total += float(calc_net_usd(pos) or 0.0)
 
     avg_daily = fee_7d_usd / 7.0
-    weekly_apr_pct = calc_weekly_apr_a(fee_7d_usd, net_total)
+    weekly_apr_pct = (fee_7d_usd / net_total) * 52 * 100 if net_total > 0 else 0.0
 
     report = (
         "CBC Liquidity Mining — Weekly\n"
@@ -658,108 +633,109 @@ def build_weekly_report_for_safe(safe: str) -> str:
     return report
 
 
-# ===============================
-# Sheets: DAILY_WIDE (Row1=No, Row2=SAFE, Row3=SAFE_ADDRESS, Row4+=data)
-# ===============================
+# ================================
+# Sheets: DAILY_WIDE
+# Row1: No, Row2: SAFE name, Row3: safe_address, Row4+: daily values
+# ================================
 def append_daily_wide_numbered(period_end_jst, safe_name, safe_address, claimed_usd_24h):
     sh = get_gsheet()
     tab_name = os.getenv("GOOGLE_SHEET_DAILY_TAB", "DAILY_WIDE")
     ws = sh.worksheet(tab_name)
 
-    # 表示（例: 2026-02-22 9:00）
+    # Sheets表示寄せ（例: 2026-02-22 9:00）
     period_key = f"{period_end_jst.strftime('%Y-%m-%d')} {period_end_jst.hour}:{period_end_jst.strftime('%M')}"
 
-    values = ws.get_all_values()
+    # 1回だけ読む（読み回数削減）
+    values = sheets_call(ws.get_all_values) or []
 
     # --- 初期化（空シート） ---
     if not values:
-        header_nums = ["", 1]
-        header_names = ["period_end_jst", safe_name]
-        header_addrs = ["safe_address", safe_address]
-
-        ws.update(range_name="A1", values=[header_nums])
-        ws.update(range_name="A2", values=[header_names])
-        ws.update(range_name="A3", values=[header_addrs])
-        ws.update(range_name="A4", values=[[period_key, float(claimed_usd_24h)]])
+        sheets_call(ws.update, range_name="A1", values=[["", 1]])
+        sheets_call(ws.update, range_name="A2", values=[["period_end_jst", safe_name]])
+        sheets_call(ws.update, range_name="A3", values=[["safe_address", safe_address]])
+        sheets_call(ws.update, range_name="A4", values=[[period_key, float(claimed_usd_24h)]])
         print("DBG: initialized DAILY_WIDE", flush=True)
         return
 
-    # --- 最低3行（番号/名前/アドレス）を確保 ---
+    # --- ヘッダー行を確保 ---
+    # values[0]=No, values[1]=names, values[2]=addrs を想定
+    # もし足りなければ作る（最小限の書き込み）
     if len(values) < 2:
-        ws.update(range_name="A2", values=[["period_end_jst"]])
-        values = ws.get_all_values()
-
+        sheets_call(ws.update, range_name="A2", values=[["period_end_jst"]])
+        values = sheets_call(ws.get_all_values) or []
     if len(values) < 3:
-        ws.update(range_name="A3", values=[["safe_address"]])
-        values = ws.get_all_values()
+        sheets_call(ws.update, range_name="A3", values=[["safe_address"]])
+        values = sheets_call(ws.get_all_values) or []
 
     header_nums = values[0] if len(values) >= 1 else [""]
     header_names = values[1] if len(values) >= 2 else ["period_end_jst"]
     header_addrs = values[2] if len(values) >= 3 else ["safe_address"]
 
-    # A列ラベル補正
     if not header_names or header_names[0] != "period_end_jst":
-        header_names = ["period_end_jst"] + header_names[1:]
+        if header_names:
+            header_names[0] = "period_end_jst"
+        else:
+            header_names = ["period_end_jst"]
+
     if not header_addrs or header_addrs[0] != "safe_address":
-        header_addrs = ["safe_address"] + header_addrs[1:]
+        if header_addrs:
+            header_addrs[0] = "safe_address"
+        else:
+            header_addrs = ["safe_address"]
 
     # --- SAFE列が無ければ追加 ---
     if safe_name not in header_names:
         current_safe_cols = max(0, len(header_names) - 1)  # A列除く
         next_no = current_safe_cols + 1
 
+        # 長さを揃える
         max_len = max(len(header_nums), len(header_names), len(header_addrs))
-        if len(header_nums) < max_len:
-            header_nums += [""] * (max_len - len(header_nums))
-        if len(header_names) < max_len:
-            header_names += [""] * (max_len - len(header_names))
-        if len(header_addrs) < max_len:
-            header_addrs += [""] * (max_len - len(header_addrs))
+        header_nums += [""] * (max_len - len(header_nums))
+        header_names += [""] * (max_len - len(header_names))
+        header_addrs += [""] * (max_len - len(header_addrs))
 
         header_nums.append(next_no)
         header_names.append(safe_name)
         header_addrs.append(safe_address)
 
-        ws.update(range_name="A1", values=[header_nums])
-        ws.update(range_name="A2", values=[header_names])
-        ws.update(range_name="A3", values=[header_addrs])
+        sheets_call(ws.update, range_name="A1", values=[header_nums])
+        sheets_call(ws.update, range_name="A2", values=[header_names])
+        sheets_call(ws.update, range_name="A3", values=[header_addrs])
 
         print("DBG: added SAFE column", safe_name, "no", next_no, flush=True)
-
-        values = ws.get_all_values()
-        header_names = values[1]
-        header_addrs = values[2]
     else:
         # 既存SAFE列のアドレスが空なら埋める
         col_idx = header_names.index(safe_name) + 1  # 1-based
-        if len(header_addrs) < col_idx or not header_addrs[col_idx - 1].strip():
-            ws.update_cell(3, col_idx, safe_address)
+        existing = header_addrs[col_idx - 1] if len(header_addrs) >= col_idx else ""
+        if not str(existing or "").strip():
+            sheets_call(ws.update_cell, 3, col_idx, safe_address)
 
+    # --- ここから値を書き込む ---
+    # ヘッダーを最新化（追加後の列番号が必要なので再計算）
+    values = sheets_call(ws.get_all_values) or []
+    header_names = values[1] if len(values) >= 2 else ["period_end_jst"]
     col_idx = header_names.index(safe_name) + 1  # 1-based
 
-    # --- 日付行（4行目以降）を探す ---
-    values = ws.get_all_values()
+    # --- 日付行（4行目以降）を探す（ローカルvaluesで） ---
     row_idx = None
     for i, row in enumerate(values[3:], start=4):
         if len(row) >= 1 and row[0].strip() == period_key:
             row_idx = i
             break
 
+    # 無ければ新規行追加（append_rowは書き込みだけでOK）
     if row_idx is None:
-        ws.append_row([period_key], value_input_option="USER_ENTERED")
-        values = ws.get_all_values()
-        for i, row in enumerate(values[3:], start=4):
-            if len(row) >= 1 and row[0].strip() == period_key:
-                row_idx = i
-                break
+        sheets_call(ws.append_row, [period_key], value_input_option="USER_ENTERED")
+        # append_rowは最終行に追加されるので、読み直さずに推定
+        row_idx = len(values) + 1
 
-    ws.update_cell(row_idx, col_idx, float(claimed_usd_24h))
+    sheets_call(ws.update_cell, row_idx, col_idx, float(claimed_usd_24h))
     print("DBG: DAILY_WIDE updated", period_key, safe_name, claimed_usd_24h, flush=True)
 
 
-# ===============================
+# ================================
 # main
-# ===============================
+# ================================
 def main():
     mode = get_report_mode()
     print(f"DBG REPORT_MODE={mode}", flush=True)
@@ -770,13 +746,27 @@ def main():
         print("config.json: safes is empty", flush=True)
         return
 
+    # Backfill flags（SAFEループ外で一回だけ読む）
+    backfill_once_raw = os.getenv("BACKFILL_ONCE")
+    backfill_days_raw = os.getenv("BACKFILL_DAYS")
+    backfill_once = (backfill_once_raw or "").strip() == "1"
+    backfill_days = int((backfill_days_raw or "0").strip() or "0")
+
+    print(f"DBG BACKFILL_ONCE raw={backfill_once_raw!r} parsed={backfill_once}", flush=True)
+    print(f"DBG BACKFILL_DAYS raw={backfill_days_raw!r} parsed={backfill_days}", flush=True)
+
     for s in safes:
         name = s.get("name") or "NONAME"
         safe = s.get("safe_address")
         chat_id = s.get("telegram_chat_id")
 
-        if not safe or not chat_id:
-            print(f"skip: missing safe/chat_id name={name}", flush=True)
+        if not safe:
+            print(f"skip: missing safe name={name}", flush=True)
+            continue
+
+        # Backfill中は Telegram不要（Sheetsだけ進める）
+        if (not backfill_once or backfill_days <= 0) and not chat_id:
+            print(f"skip: missing chat_id name={name}", flush=True)
             continue
 
         try:
@@ -785,28 +775,35 @@ def main():
                 send_telegram(report, chat_id)
 
             else:
-                backfill_once_raw = os.getenv("BACKFILL_ONCE")
-                backfill_days_raw = os.getenv("BACKFILL_DAYS")
-
-                backfill_once = (backfill_once_raw or "").strip() == "1"
-                backfill_days = int((backfill_days_raw or "0").strip() or "0")
-
-                print(f"DBG BACKFILL_ONCE raw={backfill_once_raw!r} parsed={backfill_once}", flush=True)
-                print(f"DBG BACKFILL_DAYS raw={backfill_days_raw!r} parsed={backfill_days}", flush=True)
-
                 if backfill_once and backfill_days > 0:
-                    print("DBG: start backfill", flush=True)
+                    print(f"DBG: start backfill name={name}", flush=True)
 
                     for d in range(backfill_days, 0, -1):
                         bf_end_dt = get_period_end_jst() - timedelta(days=d)
+                        bf_key = bf_end_dt.strftime("%Y-%m-%d %H:%M")
 
-                        # 過去分はTelegram送らない＆軽量（NFTブロック無し）
-                        _report, fee_usd, _ = build_daily_report_for_safe(safe, bf_end_dt, block_level="NONE")
-                        append_daily_wide_numbered(bf_end_dt, name, safe, fee_usd)
+                        try:
+                            _report, fee_usd, _ = build_daily_report_for_safe(
+                                safe, bf_end_dt, block_level="NONE"
+                            )
+                            append_daily_wide_numbered(bf_end_dt, name, safe, fee_usd)
+                            print(f"DBG: backfill ok {name} {bf_key} {fee_usd}", flush=True)
 
-                    print("DBG: backfill done", flush=True)
+                            # 少し間を置く（429回避に効く）
+                            time.sleep(0.6)
+
+                        except Exception as day_e:
+                            msg = str(day_e)
+                            if "APIError: [429]" in msg or "Quota exceeded" in msg:
+                                print(f"DBG: backfill stop by 429 {name} {bf_key}", flush=True)
+                                break  # このSAFEは一旦止めて次SAFEへ
+                            print(f"DBG: backfill skip {name} {bf_key} err={day_e}", flush=True)
+                            continue
+
+                    print(f"DBG: backfill done name={name}", flush=True)
 
                 else:
+                    # Normal Daily
                     report, fee_usd, end_dt = build_daily_report_for_safe(safe)
 
                     send_telegram(report, chat_id)
@@ -815,13 +812,14 @@ def main():
         except Exception as e:
             print(f"error name={name} safe={safe}: {e}", flush=True)
             try:
-                send_telegram(
-                    f"CBC LM ERROR\n"
-                    f"NAME\n{name}\n\n"
-                    f"SAFE\n{safe}\n\n"
-                    f"ERROR\n{e}\n",
-                    chat_id,
-                )
+                if chat_id:
+                    send_telegram(
+                        f"CBC LM ERROR\n"
+                        f"NAME\n{name}\n\n"
+                        f"SAFE\n{safe}\n\n"
+                        f"ERROR\n{e}\n",
+                        chat_id,
+                    )
             except Exception:
                 pass
 
