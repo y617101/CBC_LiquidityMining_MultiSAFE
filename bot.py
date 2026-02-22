@@ -733,9 +733,6 @@ def append_daily_wide_numbered(period_end_jst, safe_name, safe_address, claimed_
     print("DBG: DAILY_WIDE updated", period_key, safe_name, claimed_usd_24h, flush=True)
 
 
-# ================================
-# main
-# ================================
 def main():
     mode = get_report_mode()
     print(f"DBG REPORT_MODE={mode}", flush=True)
@@ -746,7 +743,7 @@ def main():
         print("config.json: safes is empty", flush=True)
         return
 
-    # Backfill flags（SAFEループ外で一回だけ読む）
+    # Backfill flags
     backfill_once_raw = os.getenv("BACKFILL_ONCE")
     backfill_days_raw = os.getenv("BACKFILL_DAYS")
     backfill_once = (backfill_once_raw or "").strip() == "1"
@@ -755,17 +752,22 @@ def main():
     print(f"DBG BACKFILL_ONCE raw={backfill_once_raw!r} parsed={backfill_once}", flush=True)
     print(f"DBG BACKFILL_DAYS raw={backfill_days_raw!r} parsed={backfill_days}", flush=True)
 
+    only_name_raw = os.getenv("BACKFILL_ONLY_NAME")
+    only_name = (only_name_raw or "").strip().upper()
+
+    if only_name:
+        print(f"DBG BACKFILL_ONLY_NAME raw={only_name_raw!r} parsed={only_name!r}", flush=True)
+
     for s in safes:
-        name = s.get("name") or "NONAME"
+        name = (s.get("name") or "NONAME").strip()
+        name_upper = name.upper()
+
         safe = s.get("safe_address")
         chat_id = s.get("telegram_chat_id")
-        # ===== backfill: run only one SAFE if specified =====
-        only_name_raw = os.getenv("BACKFILL_ONLY_NAME")
-        only_name = (only_name_raw or "").strip()
 
+        # 大小文字無視比較
         if only_name:
-            print(f"DBG BACKFILL_ONLY_NAME raw={only_name_raw!r} parsed={only_name!r}", flush=True)
-            if name != only_name:
+            if name_upper != only_name:
                 print(f"DBG: skip by BACKFILL_ONLY_NAME name={name!r}", flush=True)
                 continue
 
@@ -773,7 +775,6 @@ def main():
             print(f"skip: missing safe name={name}", flush=True)
             continue
 
-        # Backfill中は Telegram不要（Sheetsだけ進める）
         if (not backfill_once or backfill_days <= 0) and not chat_id:
             print(f"skip: missing chat_id name={name}", flush=True)
             continue
@@ -796,42 +797,32 @@ def main():
                                 safe, bf_end_dt, block_level="NONE"
                             )
                             append_daily_wide_numbered(bf_end_dt, name, safe, fee_usd)
-                            print(f"DBG: backfill ok {name} {bf_key} {fee_usd}", flush=True)
 
-                            # 少し間を置く（429回避に効く）
+                            print(f"DBG: backfill ok {name} {bf_key} {fee_usd}", flush=True)
                             time.sleep(0.6)
 
                         except Exception as day_e:
                             msg = str(day_e)
                             if "APIError: [429]" in msg or "Quota exceeded" in msg:
                                 print(f"DBG: backfill stop by 429 {name} {bf_key}", flush=True)
-                                break  # このSAFEは一旦止めて次SAFEへ
+                                break
                             print(f"DBG: backfill skip {name} {bf_key} err={day_e}", flush=True)
                             continue
 
                     print(f"DBG: backfill done name={name}", flush=True)
 
                 else:
-                    # Normal Daily
                     report, fee_usd, end_dt = build_daily_report_for_safe(safe)
-
                     send_telegram(report, chat_id)
                     append_daily_wide_numbered(end_dt, name, safe, fee_usd)
 
         except Exception as e:
             print(f"error name={name} safe={safe}: {e}", flush=True)
-            try:
-                if chat_id:
+            if chat_id:
+                try:
                     send_telegram(
-                        f"CBC LM ERROR\n"
-                        f"NAME\n{name}\n\n"
-                        f"SAFE\n{safe}\n\n"
-                        f"ERROR\n{e}\n",
+                        f"CBC LM ERROR\n\nNAME\n{name}\n\nSAFE\n{safe}\n\nERROR\n{e}",
                         chat_id,
                     )
-            except Exception:
-                pass
-
-
-if __name__ == "__main__":
-    main()
+                except Exception:
+                    pass
