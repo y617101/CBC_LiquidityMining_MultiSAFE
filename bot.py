@@ -317,17 +317,21 @@ def calc_fee_apr_a(fee_24h_usd, net_usd):
 def calc_fee_usd_24h_from_cash_flows(pos_list_all, now_dt: datetime):
     """
     24h窓（JST 09:00 → 翌09:00）で「確定手数料USD」を集計
-    ✅ 対象typeは確定系だけに限定（ズレ防止）
-      - fees-collected
-      - claimed-fees
+    対象 type: fees-collected / claimed-fees（ここに固定）
     """
     end_dt = get_period_end_jst(now_dt)
     start_dt = end_dt - timedelta(days=1)
 
+    DEBUG_FEE_TRACE = (os.getenv("DEBUG_FEE_TRACE") or "").strip() == "1"
+    DEBUG_FEE_SUMMARY = (os.getenv("DEBUG_FEE_SUMMARY") or "").strip() == "1"
+
     total = 0.0
     total_count = 0
-    fee_by_nft = {}
-    count_by_nft = {}
+    fee_by_nft: dict[str, float] = {}
+    count_by_nft: dict[str, int] = {}
+
+    # デバッグ用：採用したイベントを保存
+    picked = []  # (nft_id, type, ts_jst, amt_usd, tx_hash)
 
     for pos in (pos_list_all or []):
         if not isinstance(pos, dict):
@@ -343,8 +347,7 @@ def calc_fee_usd_24h_from_cash_flows(pos_list_all, now_dt: datetime):
                 continue
 
             t = _lower(cf.get("type"))
-
-            # ✅ 確定系のみ（unclaimed-fees-state 等は除外）
+            # ✅ 24h確定の対象はこの2つに固定
             if t not in ("fees-collected", "claimed-fees"):
                 continue
 
@@ -357,9 +360,8 @@ def calc_fee_usd_24h_from_cash_flows(pos_list_all, now_dt: datetime):
                 continue
 
             amt_usd = to_f(cf.get("amount_usd"))
-
-            # amount_usd 無い時だけフォールバック
             if amt_usd is None:
+                # フォールバック：prices × 数量
                 prices = cf.get("prices") or {}
                 p0 = to_f((prices.get("token0") or {}).get("usd")) or 0.0
                 p1 = to_f((prices.get("token1") or {}).get("usd")) or 0.0
@@ -389,21 +391,47 @@ def calc_fee_usd_24h_from_cash_flows(pos_list_all, now_dt: datetime):
             if not (amt_usd > 0):
                 continue
 
+            txh = cf.get("tx_hash") or cf.get("txHash") or cf.get("hash") or "NO_TX"
+
             if DEBUG_FEE_TRACE:
                 print(
-                    "DBG_FEE",
+                    "DBG_FEE_PICK",
                     "nft=", nft_id,
                     "type=", t,
                     "ts_jst=", ts_dt.strftime("%Y-%m-%d %H:%M"),
-                    "amount_usd_raw=", cf.get("amount_usd"),
-                    "final_usd=", amt_usd,
-                    flush=True
+                    "amt_usd=", f"{amt_usd:.6f}",
+                    "tx=", str(txh)[:10],
+                    flush=True,
                 )
+
+            picked.append((nft_id, t, ts_dt, amt_usd, str(txh)))
 
             total += amt_usd
             total_count += 1
             fee_by_nft[nft_id] = float(fee_by_nft.get(nft_id, 0.0) or 0.0) + amt_usd
             count_by_nft[nft_id] = int(count_by_nft.get(nft_id, 0) or 0) + 1
+
+    # ✅ NFT別サマリ（これが欲しかったやつ）
+    if DEBUG_FEE_SUMMARY:
+        print("DBG_FEE_SUMMARY_WINDOW",
+              start_dt.strftime("%Y-%m-%d %H:%M"), "→", end_dt.strftime("%Y-%m-%d %H:%M"),
+              "JST", flush=True)
+
+        # NFTごとに “合計 / 件数 / tx一覧” を出す
+        by_nft = {}
+        for nft_id, t, ts_dt, amt, txh in picked:
+            by_nft.setdefault(nft_id, {"sum": 0.0, "cnt": 0, "txs": []})
+            by_nft[nft_id]["sum"] += amt
+            by_nft[nft_id]["cnt"] += 1
+            by_nft[nft_id]["txs"].append(f"{ts_dt.strftime('%m-%d %H:%M')} {t} ${amt:.2f} {txh[:10]}")
+
+        for nft_id in sorted(by_nft.keys()):
+            info = by_nft[nft_id]
+            print(f"DBG_FEE_NFT {nft_id} sum=${info['sum']:.2f} cnt={info['cnt']}", flush=True)
+            for line in info["txs"]:
+                print("  -", line, flush=True)
+
+        print(f"DBG_FEE_TOTAL sum=${total:.2f} cnt={total_count}", flush=True)
 
     return total, total_count, fee_by_nft, count_by_nft, start_dt, end_dt
 
