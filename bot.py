@@ -480,20 +480,18 @@ def build_daily_report_for_safe(safe: str):
         nft_fee_apr = calc_fee_apr_a(nft_apr_base, net)
 
         nft_url = f"https://app.uniswap.org/positions/v3/base/{nft_id}"
-
+        nft_link = f'<a href="{h(nft_url)}">{h(nft_id)}</a>'
+        
         nft_blocks.append(
             "\n"
             "────────────────\n"
-            f"NFT {nft_id} ({nft_url})\n"
-            f"Status {status}\n"
-            "────────────────\n"
-            "\n"
+            f"NFT {nft_link}\n"
+            f"Status {h(status)}\n"
+            "────────────────\n\n"
             "Net\n"
-            f"{fmt_money(net)}\n"
-            "\n"
+            f"{fmt_money(net)}\n\n"
             "蓄積手数料（未Claim）\n"
-            f"{fmt_money(fees_value)}\n"
-            "\n"
+            f"{fmt_money(fees_value)}\n\n"
             "Fee APR\n"
             f"{fmt_pct(nft_fee_apr)}\n"
         )
