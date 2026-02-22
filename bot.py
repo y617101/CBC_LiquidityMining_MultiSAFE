@@ -759,6 +759,15 @@ def main():
         name = s.get("name") or "NONAME"
         safe = s.get("safe_address")
         chat_id = s.get("telegram_chat_id")
+        # ===== backfill: run only one SAFE if specified =====
+        only_name_raw = os.getenv("BACKFILL_ONLY_NAME")
+        only_name = (only_name_raw or "").strip()
+
+        if only_name:
+            print(f"DBG BACKFILL_ONLY_NAME raw={only_name_raw!r} parsed={only_name!r}", flush=True)
+            if name != only_name:
+                print(f"DBG: skip by BACKFILL_ONLY_NAME name={name!r}", flush=True)
+                continue
 
         if not safe:
             print(f"skip: missing safe name={name}", flush=True)
