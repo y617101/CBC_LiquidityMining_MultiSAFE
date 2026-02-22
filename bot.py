@@ -661,55 +661,78 @@ def append_daily_wide_numbered(period_end_jst, safe_name, safe_address, claimed_
     tab_name = os.getenv("GOOGLE_SHEET_DAILY_TAB", "DAILY_WIDE")
     ws = sh.worksheet(tab_name)
 
-    # Sheets表示に合わせる（09:00 ではなく 9:00 形式）
+    # Sheets表示寄せ（例: 2026-02-22 9:00）
     period_key = f"{period_end_jst.strftime('%Y-%m-%d')} {period_end_jst.hour}:{period_end_jst.strftime('%M')}"
 
     values = ws.get_all_values()
 
-    # 初期化（空シート）
+    # --- 初期化（空シート） ---
     if not values:
         ws.update("A1", [["", 1]])
         ws.update("A2", [["period_end_jst", safe_name]])
-        ws.update("A3", [[period_key, float(claimed_usd_24h)]])
+        ws.update("A3", [["safe_address", safe_address]])
+        ws.update("A4", [[period_key, float(claimed_usd_24h)]])
         print("DBG: initialized DAILY_WIDE", flush=True)
         return
 
-    # ヘッダー行を確保（最低2行）
-    if len(values) == 1:
+    # --- 最低3行（番号/名前/アドレス）を確保 ---
+    if len(values) < 2:
         ws.update("A2", [["period_end_jst"]])
+        values = ws.get_all_values()
+
+    if len(values) < 3:
+        ws.update("A3", [["safe_address"]])
         values = ws.get_all_values()
 
     header_nums = values[0] if len(values) >= 1 else [""]
     header_names = values[1] if len(values) >= 2 else ["period_end_jst"]
+    header_addrs = values[2] if len(values) >= 3 else ["safe_address"]
 
-    # A列はperiod_end_jst固定
+    # A列ラベル補正
     if not header_names or header_names[0] != "period_end_jst":
         header_names = ["period_end_jst"] + header_names[1:]
+    if not header_addrs or header_addrs[0] != "safe_address":
+        header_addrs = ["safe_address"] + header_addrs[1:]
 
-    # SAFE列が無ければ右に追加
+    # --- SAFE列が無ければ追加 ---
     if safe_name not in header_names:
-        current_safe_cols = max(0, len(header_names) - 1)  # A列除くSAFE列数
+        current_safe_cols = max(0, len(header_names) - 1)  # A列除く
         next_no = current_safe_cols + 1
 
-        if len(header_nums) < len(header_names):
-            header_nums = header_nums + [""] * (len(header_names) - len(header_nums))
+        # 長さを揃える（A列含む）
+        max_len = max(len(header_nums), len(header_names), len(header_addrs))
+        if len(header_nums) < max_len:
+            header_nums += [""] * (max_len - len(header_nums))
+        if len(header_names) < max_len:
+            header_names += [""] * (max_len - len(header_names))
+        if len(header_addrs) < max_len:
+            header_addrs += [""] * (max_len - len(header_addrs))
 
         header_nums.append(next_no)
         header_names.append(safe_name)
+        header_addrs.append(safe_address)
 
         ws.update("A1", [header_nums])
         ws.update("A2", [header_names])
+        ws.update("A3", [header_addrs])
 
         print("DBG: added SAFE column", safe_name, "no", next_no, flush=True)
 
         values = ws.get_all_values()
         header_names = values[1]
+        header_addrs = values[2]
+    else:
+        # 既存SAFE列のアドレスが空なら埋める
+        col_idx = header_names.index(safe_name) + 1  # 1-based
+        if len(header_addrs) < col_idx or not header_addrs[col_idx - 1].strip():
+            ws.update_cell(3, col_idx, safe_address)
 
     col_idx = header_names.index(safe_name) + 1  # 1-based
 
-    # 日付行（3行目以降）を探す
+    # --- 日付行（4行目以降）を探す ---
+    values = ws.get_all_values()
     row_idx = None
-    for i, row in enumerate(values[2:], start=3):
+    for i, row in enumerate(values[3:], start=4):  # 4行目から
         if len(row) >= 1 and row[0].strip() == period_key:
             row_idx = i
             break
@@ -717,9 +740,8 @@ def append_daily_wide_numbered(period_end_jst, safe_name, safe_address, claimed_
     # 無ければ新規行追加（A列だけ）
     if row_idx is None:
         ws.append_row([period_key], value_input_option="USER_ENTERED")
-        # 念のため再取得して、今追加した行を探す（これでズレ防止）
         values = ws.get_all_values()
-        for i, row in enumerate(values[2:], start=3):
+        for i, row in enumerate(values[3:], start=4):
             if len(row) >= 1 and row[0].strip() == period_key:
                 row_idx = i
                 break
