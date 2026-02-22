@@ -69,6 +69,23 @@ def _to_ts_sec(ts):
         return None
 
 
+def env_int(name: str, default: int = 0) -> int:
+    """
+    ENVをint化（不正値でも落とさず default にフォールバック）
+    """
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    s = str(raw).strip()
+    if s == "":
+        return default
+    try:
+        return int(s)
+    except Exception:
+        print(f"DBG ENV int parse failed: {name} raw={raw!r} -> default {default}", flush=True)
+        return default
+
+
 # ================================
 # Mode / Time
 # ================================
@@ -476,7 +493,6 @@ def build_daily_report_for_safe(safe: str, end_dt=None, block_level: str = "FULL
     pos_list_all += pos_list_open
     pos_list_all += pos_list_exited
 
-    # ★バックフィルでも過去日の窓で計算できるように end_dt を渡す
     now_dt = end_dt
 
     fee_usd, fee_count, fee_by_nft, _, start_dt, end_dt = calc_fee_usd_24h_from_cash_flows(
@@ -645,7 +661,6 @@ def append_daily_wide_numbered(period_end_jst, safe_name, safe_address, claimed_
     # Sheets表示寄せ（例: 2026-02-22 9:00）
     period_key = f"{period_end_jst.strftime('%Y-%m-%d')} {period_end_jst.hour}:{period_end_jst.strftime('%M')}"
 
-    # 1回だけ読む（読み回数削減）
     values = sheets_call(ws.get_all_values) or []
 
     # --- 初期化（空シート） ---
@@ -658,8 +673,6 @@ def append_daily_wide_numbered(period_end_jst, safe_name, safe_address, claimed_
         return
 
     # --- ヘッダー行を確保 ---
-    # values[0]=No, values[1]=names, values[2]=addrs を想定
-    # もし足りなければ作る（最小限の書き込み）
     if len(values) < 2:
         sheets_call(ws.update, range_name="A2", values=[["period_end_jst"]])
         values = sheets_call(ws.get_all_values) or []
@@ -688,7 +701,6 @@ def append_daily_wide_numbered(period_end_jst, safe_name, safe_address, claimed_
         current_safe_cols = max(0, len(header_names) - 1)  # A列除く
         next_no = current_safe_cols + 1
 
-        # 長さを揃える
         max_len = max(len(header_nums), len(header_names), len(header_addrs))
         header_nums += [""] * (max_len - len(header_nums))
         header_names += [""] * (max_len - len(header_names))
@@ -704,33 +716,59 @@ def append_daily_wide_numbered(period_end_jst, safe_name, safe_address, claimed_
 
         print("DBG: added SAFE column", safe_name, "no", next_no, flush=True)
     else:
-        # 既存SAFE列のアドレスが空なら埋める
         col_idx = header_names.index(safe_name) + 1  # 1-based
         existing = header_addrs[col_idx - 1] if len(header_addrs) >= col_idx else ""
         if not str(existing or "").strip():
             sheets_call(ws.update_cell, 3, col_idx, safe_address)
 
     # --- ここから値を書き込む ---
-    # ヘッダーを最新化（追加後の列番号が必要なので再計算）
     values = sheets_call(ws.get_all_values) or []
     header_names = values[1] if len(values) >= 2 else ["period_end_jst"]
     col_idx = header_names.index(safe_name) + 1  # 1-based
 
-    # --- 日付行（4行目以降）を探す（ローカルvaluesで） ---
     row_idx = None
     for i, row in enumerate(values[3:], start=4):
         if len(row) >= 1 and row[0].strip() == period_key:
             row_idx = i
             break
 
-    # 無ければ新規行追加（append_rowは書き込みだけでOK）
     if row_idx is None:
         sheets_call(ws.append_row, [period_key], value_input_option="USER_ENTERED")
-        # append_rowは最終行に追加されるので、読み直さずに推定
         row_idx = len(values) + 1
 
     sheets_call(ws.update_cell, row_idx, col_idx, float(claimed_usd_24h))
     print("DBG: DAILY_WIDE updated", period_key, safe_name, claimed_usd_24h, flush=True)
+
+
+def maybe_sort_daily_wide_by_date():
+    """
+    任意：A列で昇順ソート（見た目を時系列に整える）
+    ENV: SHEETS_SORT_BY_DATE=1
+    """
+    if (os.getenv("SHEETS_SORT_BY_DATE") or "").strip() != "1":
+        return
+
+    sh = get_gsheet()
+    tab_name = os.getenv("GOOGLE_SHEET_DAILY_TAB", "DAILY_WIDE")
+    ws = sh.worksheet(tab_name)
+
+    values = sheets_call(ws.get_all_values) or []
+    if len(values) <= 4:
+        return  # データ少なすぎ
+
+    last_row = len(values)
+    last_col = max((len(r) for r in values), default=1)
+
+    # A4 から最終行まで、A列で昇順
+    try:
+        sheets_call(
+            ws.sort,
+            (1, "asc"),
+            range=f"A4:{gspread.utils.rowcol_to_a1(last_row, last_col)}",
+        )
+        print("DBG: sorted DAILY_WIDE by date (A col asc)", flush=True)
+    except Exception as e:
+        print(f"DBG: sort skipped err={e}", flush=True)
 
 
 def main():
@@ -746,11 +784,14 @@ def main():
     # Backfill flags
     backfill_once_raw = os.getenv("BACKFILL_ONCE")
     backfill_days_raw = os.getenv("BACKFILL_DAYS")
+
     backfill_once = (backfill_once_raw or "").strip() == "1"
-    backfill_days = int((backfill_days_raw or "0").strip() or "0")
+    backfill_days = env_int("BACKFILL_DAYS", 0)
+    backfill_offset = env_int("BACKFILL_OFFSET_DAYS", 0)
 
     print(f"DBG BACKFILL_ONCE raw={backfill_once_raw!r} parsed={backfill_once}", flush=True)
     print(f"DBG BACKFILL_DAYS raw={backfill_days_raw!r} parsed={backfill_days}", flush=True)
+    print(f"DBG BACKFILL_OFFSET_DAYS raw={os.getenv('BACKFILL_OFFSET_DAYS')!r} parsed={backfill_offset}", flush=True)
 
     only_name_raw = os.getenv("BACKFILL_ONLY_NAME")
     only_name = (only_name_raw or "").strip().upper()
@@ -765,7 +806,6 @@ def main():
         safe = s.get("safe_address")
         chat_id = s.get("telegram_chat_id")
 
-        # 大小文字無視比較
         if only_name:
             if name_upper != only_name:
                 print(f"DBG: skip by BACKFILL_ONLY_NAME name={name!r}", flush=True)
@@ -789,7 +829,8 @@ def main():
                     print(f"DBG: start backfill name={name}", flush=True)
 
                     for d in range(backfill_days, 0, -1):
-                        bf_end_dt = get_period_end_jst() - timedelta(days=d)
+                        # ★ offset 対応（ここが今回の肝）
+                        bf_end_dt = get_period_end_jst() - timedelta(days=backfill_offset + d)
                         bf_key = bf_end_dt.strftime("%Y-%m-%d %H:%M")
 
                         try:
@@ -811,6 +852,9 @@ def main():
 
                     print(f"DBG: backfill done name={name}", flush=True)
 
+                    # 任意：並びを整える（必要なら ENV でON）
+                    maybe_sort_daily_wide_by_date()
+
                 else:
                     report, fee_usd, end_dt = build_daily_report_for_safe(safe)
                     send_telegram(report, chat_id)
@@ -826,3 +870,7 @@ def main():
                     )
                 except Exception:
                     pass
+
+
+if __name__ == "__main__":
+    main()
