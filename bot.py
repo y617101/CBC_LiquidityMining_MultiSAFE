@@ -36,6 +36,21 @@ def test_write_one_row():
     ws.append_row([now, "TEST", "0x0", 1.23], value_input_option="USER_ENTERED")
     print("✅ Sheets test write OK")
 
+def append_daily_row(period_end_jst, safe_name, safe_address, claimed_usd_24h):
+    sh = get_gsheet()
+    tab_name = os.getenv("GOOGLE_SHEET_DAILY_TAB", "DAILY_LEDGER")
+    ws = sh.worksheet(tab_name)
+
+    ws.append_row(
+        [
+            period_end_jst.strftime("%Y-%m-%d %H:%M"),
+            safe_name,
+            safe_address,
+            float(claimed_usd_24h),
+        ],
+        value_input_option="USER_ENTERED",
+    )
+
 # ================================
 # Token Symbol Map (Base)
 ADDRESS_SYMBOL_MAP = {
@@ -559,7 +574,7 @@ def build_daily_report_for_safe(safe: str):
         "09:00 JST\n"
     )
 
-    return report
+    return report, fee_usd
 
 # ===============================
 # Weekly (layout updated, logic fixed)
@@ -640,8 +655,6 @@ def build_weekly_report_for_safe(safe: str) -> str:
 # main
 # ===============================
 def main():
-    test_write_one_row()
-    return
     
     mode = get_report_mode()
     print(f"DBG REPORT_MODE={mode}", flush=True)
@@ -665,9 +678,10 @@ def main():
             if mode == "WEEKLY":
                 report = build_weekly_report_for_safe(safe)
             else:
-                report = build_daily_report_for_safe(safe)
+                report, fee_usd = build_daily_report_for_safe(safe)
 
             send_telegram(report, chat_id)
+            append_daily_row(end_dt, safe_name, safe, fee_usd)
 
         except Exception as e:
             print(f"error name={name} safe={safe}: {e}", flush=True)
