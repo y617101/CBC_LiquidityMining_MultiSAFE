@@ -661,15 +661,16 @@ def append_daily_wide_numbered(period_end_jst, safe_name, safe_address, claimed_
     tab_name = os.getenv("GOOGLE_SHEET_DAILY_TAB", "DAILY_WIDE")
     ws = sh.worksheet(tab_name)
 
-    period_str = period_end_jst.strftime("%Y-%m-%d %H:%M")
+    # Sheets表示に合わせる（09:00 ではなく 9:00 形式）
+    period_key = f"{period_end_jst.strftime('%Y-%m-%d')} {period_end_jst.hour}:{period_end_jst.strftime('%M')}"
 
     values = ws.get_all_values()
 
-    # --- 初期化（空シート） ---
+    # 初期化（空シート）
     if not values:
         ws.update("A1", [["", 1]])
         ws.update("A2", [["period_end_jst", safe_name]])
-        ws.update("A3", [[period_str, float(claimed_usd_24h)]])
+        ws.update("A3", [[period_key, float(claimed_usd_24h)]])
         print("DBG: initialized DAILY_WIDE", flush=True)
         return
 
@@ -685,12 +686,11 @@ def append_daily_wide_numbered(period_end_jst, safe_name, safe_address, claimed_
     if not header_names or header_names[0] != "period_end_jst":
         header_names = ["period_end_jst"] + header_names[1:]
 
-    # --- SAFE列が無ければ右に追加 ---
+    # SAFE列が無ければ右に追加
     if safe_name not in header_names:
-        current_safe_cols = max(0, len(header_names) - 1)  # A列を除くSAFE列数
+        current_safe_cols = max(0, len(header_names) - 1)  # A列除くSAFE列数
         next_no = current_safe_cols + 1
 
-        # header_nums の長さを header_names に合わせてから追加
         if len(header_nums) < len(header_names):
             header_nums = header_nums + [""] * (len(header_names) - len(header_nums))
 
@@ -702,28 +702,30 @@ def append_daily_wide_numbered(period_end_jst, safe_name, safe_address, claimed_
 
         print("DBG: added SAFE column", safe_name, "no", next_no, flush=True)
 
-        # 反映後に再取得
         values = ws.get_all_values()
         header_names = values[1]
 
     col_idx = header_names.index(safe_name) + 1  # 1-based
 
-    # --- 日付行（3行目以降）を探す ---
+    # 日付行（3行目以降）を探す
     row_idx = None
     for i, row in enumerate(values[2:], start=3):
-        if len(row) >= 1 and row[0].strip() == period_str:
+        if len(row) >= 1 and row[0].strip() == period_key:
             row_idx = i
             break
 
     # 無ければ新規行追加（A列だけ）
     if row_idx is None:
-        ws.append_row([period_str], value_input_option="USER_ENTERED")
-        row_idx = len(values) + 1
+        ws.append_row([period_key], value_input_option="USER_ENTERED")
+        # 念のため再取得して、今追加した行を探す（これでズレ防止）
+        values = ws.get_all_values()
+        for i, row in enumerate(values[2:], start=3):
+            if len(row) >= 1 and row[0].strip() == period_key:
+                row_idx = i
+                break
 
-    # --- セル更新（同日なら上書き） ---
     ws.update_cell(row_idx, col_idx, float(claimed_usd_24h))
-    print("DBG: DAILY_WIDE updated", period_str, safe_name, claimed_usd_24h, flush=True)
-
+    print("DBG: DAILY_WIDE updated", period_key, safe_name, claimed_usd_24h, flush=True)
 
 # ===============================
 # main
