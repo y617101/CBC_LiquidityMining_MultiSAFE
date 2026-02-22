@@ -151,7 +151,7 @@ def send_telegram(text: str, chat_id: str = None):
             json={
                 "chat_id": chat_id,
                 "text": chunk,
-                # parse_mode omitted to keep text fully copyable
+                "parse_mode": "HTML",
                 "disable_web_page_preview": True,
             },
             timeout=30,
