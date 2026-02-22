@@ -332,6 +332,7 @@ def calc_fee_usd_24h_from_cash_flows(pos_list_all, now_dt: datetime):
         for cf in cfs:
             if not isinstance(cf, dict):
                 continue
+                DEBUG_FEE_TRACE = (os.getenv("DEBUG_FEE_TRACE") or "").strip() == "1"
 
             t = _lower(cf.get("type"))
             if not any(k in t for k in ("fee", "collect", "claim")):
@@ -376,6 +377,17 @@ def calc_fee_usd_24h_from_cash_flows(pos_list_all, now_dt: datetime):
 
             if not (amt_usd > 0):
                 continue
+
+            if DEBUG_FEE_TRACE:
+                print(
+                    "DBG_FEE",
+                    "nft=", nft_id,
+                    "type=", t,
+                    "ts_jst=", ts_dt.strftime("%Y-%m-%d %H:%M"),
+                    "amount_usd_raw=", cf.get("amount_usd"),
+                    "final_usd=", amt_usd,
+                    flush=True
+                )
 
             total += amt_usd
             total_count += 1
