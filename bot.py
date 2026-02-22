@@ -654,40 +654,75 @@ def build_weekly_report_for_safe(safe: str) -> str:
     return report
 
 # ===============================
-# Sheets: append with duplicate check
+# Sheets: DAILY_WIDE (Row1=No, Row2=SAFE, Row3+=data)
 # ===============================
-def append_daily_row(period_end_jst, safe_name, safe_address, claimed_usd_24h):
+def append_daily_wide_numbered(period_end_jst, safe_name, safe_address, claimed_usd_24h):
     sh = get_gsheet()
-    tab_name = os.getenv("GOOGLE_SHEET_DAILY_TAB", "DAILY_LEDGER")
+    tab_name = os.getenv("GOOGLE_SHEET_DAILY_TAB", "DAILY_WIDE")
     ws = sh.worksheet(tab_name)
 
     period_str = period_end_jst.strftime("%Y-%m-%d %H:%M")
-    safe_lc = (safe_address or "").strip().lower()
 
-    # 既存チェック（period_end_jst + safe_address が同じなら書かない）
     values = ws.get_all_values()
-    if values and len(values) >= 2:
-        header = values[0]
-        try:
-            idx_end = header.index("period_end_jst")
-            idx_safe = header.index("safe_address")
-        except ValueError:
-            # ヘッダー名が違う/無いときの保険（列位置で見る）
-            idx_end, idx_safe = 0, 2
 
-        for row in values[1:]:
-            if len(row) <= max(idx_end, idx_safe):
-                continue
-            if row[idx_end].strip() == period_str and row[idx_safe].strip().lower() == safe_lc:
-                print("DBG: skip duplicate daily row:", period_str, safe_lc, flush=True)
-                return
+    # --- 初期化（空シート） ---
+    if not values:
+        ws.update("A1", [["", 1]])
+        ws.update("A2", [["period_end_jst", safe_name]])
+        ws.update("A3", [[period_str, float(claimed_usd_24h)]])
+        print("DBG: initialized DAILY_WIDE", flush=True)
+        return
 
-    # 追記
-    ws.append_row(
-        [period_str, safe_name, safe_address, float(claimed_usd_24h)],
-        value_input_option="USER_ENTERED",
-    )
-    print("DBG: appended daily row:", period_str, safe_lc, flush=True)
+    # ヘッダー行を確保（最低2行）
+    if len(values) == 1:
+        ws.update("A2", [["period_end_jst"]])
+        values = ws.get_all_values()
+
+    header_nums = values[0] if len(values) >= 1 else [""]
+    header_names = values[1] if len(values) >= 2 else ["period_end_jst"]
+
+    # A列はperiod_end_jst固定
+    if not header_names or header_names[0] != "period_end_jst":
+        header_names = ["period_end_jst"] + header_names[1:]
+
+    # --- SAFE列が無ければ右に追加 ---
+    if safe_name not in header_names:
+        current_safe_cols = max(0, len(header_names) - 1)  # A列を除くSAFE列数
+        next_no = current_safe_cols + 1
+
+        # header_nums の長さを header_names に合わせてから追加
+        if len(header_nums) < len(header_names):
+            header_nums = header_nums + [""] * (len(header_names) - len(header_nums))
+
+        header_nums.append(next_no)
+        header_names.append(safe_name)
+
+        ws.update("A1", [header_nums])
+        ws.update("A2", [header_names])
+
+        print("DBG: added SAFE column", safe_name, "no", next_no, flush=True)
+
+        # 反映後に再取得
+        values = ws.get_all_values()
+        header_names = values[1]
+
+    col_idx = header_names.index(safe_name) + 1  # 1-based
+
+    # --- 日付行（3行目以降）を探す ---
+    row_idx = None
+    for i, row in enumerate(values[2:], start=3):
+        if len(row) >= 1 and row[0].strip() == period_str:
+            row_idx = i
+            break
+
+    # 無ければ新規行追加（A列だけ）
+    if row_idx is None:
+        ws.append_row([period_str], value_input_option="USER_ENTERED")
+        row_idx = len(values) + 1
+
+    # --- セル更新（同日なら上書き） ---
+    ws.update_cell(row_idx, col_idx, float(claimed_usd_24h))
+    print("DBG: DAILY_WIDE updated", period_str, safe_name, claimed_usd_24h, flush=True)
 
 
 # ===============================
@@ -722,8 +757,8 @@ def main():
                 # ① Telegram
                 send_telegram(report, chat_id)
 
-                # ② Sheets（重複防止付き）
-                append_daily_row(end_dt, name, safe, fee_usd)
+                # ② Sheets（DAILY_WIDE）
+                append_daily_wide_numbered(end_dt, name, safe, fee_usd)
 
         except Exception as e:
             print(f"error name={name} safe={safe}: {e}", flush=True)
