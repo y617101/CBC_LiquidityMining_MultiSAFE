@@ -486,6 +486,8 @@ def load_config():
 # Daily (layout updated, logic fixed)
 # ================================
 def build_daily_report_for_safe(safe: str):
+    end_dt = get_period_end_jst()
+    start_dt = end_dt - timedelta(days=1)
     positions_open = fetch_positions(safe, active=True)
     positions_exited = fetch_positions(safe, active=False)
 
@@ -680,7 +682,7 @@ def main():
                 report, fee_usd, end_dt = build_daily_report_for_safe(safe)
 
             send_telegram(report, chat_id)
-            append_daily_row(end_dt, safe_name, safe, fee_usd)
+            append_daily_row(end_dt, name, safe, fee_usd)
 
         except Exception as e:
             print(f"error name={name} safe={safe}: {e}", flush=True)
