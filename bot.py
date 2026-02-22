@@ -305,15 +305,11 @@ def calc_fee_apr_a(fee_24h_usd, net_usd):
 # 24h fee calc (Daily)
 # ================================
 def calc_fee_usd_24h_from_cash_flows(pos_list_all, now_dt: datetime):
-    """
-    24h窓（JST 09:00 → 翌09:00）で「確定手数料USD」を集計
-    - type に "fee"/"collect"/"claim" を含むものを対象
-    - amount_usd が無ければ prices×数量 でフォールバック
-    Returns:
-      total_usd, total_count, fee_by_nft, count_by_nft, start_dt, end_dt
-    """
     end_dt = get_period_end_jst(now_dt)
     start_dt = end_dt - timedelta(days=1)
+
+    # ★ここで必ず初期化（関数ローカルで固定）
+    DEBUG_FEE_TRACE = (os.getenv("DEBUG_FEE_TRACE") or "").strip() == "1"
 
     total = 0.0
     total_count = 0
@@ -332,7 +328,6 @@ def calc_fee_usd_24h_from_cash_flows(pos_list_all, now_dt: datetime):
         for cf in cfs:
             if not isinstance(cf, dict):
                 continue
-                DEBUG_FEE_TRACE = (os.getenv("DEBUG_FEE_TRACE") or "").strip() == "1"
 
             t = _lower(cf.get("type"))
             if not any(k in t for k in ("fee", "collect", "claim")):
@@ -347,6 +342,17 @@ def calc_fee_usd_24h_from_cash_flows(pos_list_all, now_dt: datetime):
                 continue
 
             amt_usd = to_f(cf.get("amount_usd"))
+
+            if DEBUG_FEE_TRACE:
+                print(
+                    "DBG_FEE",
+                    "nft=", nft_id,
+                    "type=", t,
+                    "ts_jst=", ts_dt.strftime("%Y-%m-%d %H:%M"),
+                    "amount_usd_raw=", cf.get("amount_usd"),
+                    "flush=True",
+                    flush=True
+                )
 
             if amt_usd is None:
                 prices = cf.get("prices") or {}
@@ -378,20 +384,8 @@ def calc_fee_usd_24h_from_cash_flows(pos_list_all, now_dt: datetime):
             if not (amt_usd > 0):
                 continue
 
-            if DEBUG_FEE_TRACE:
-                print(
-                    "DBG_FEE",
-                    "nft=", nft_id,
-                    "type=", t,
-                    "ts_jst=", ts_dt.strftime("%Y-%m-%d %H:%M"),
-                    "amount_usd_raw=", cf.get("amount_usd"),
-                    "final_usd=", amt_usd,
-                    flush=True
-                )
-
             total += amt_usd
             total_count += 1
-
             fee_by_nft[nft_id] = float(fee_by_nft.get(nft_id, 0.0) or 0.0) + amt_usd
             count_by_nft[nft_id] = int(count_by_nft.get(nft_id, 0) or 0) + 1
 
