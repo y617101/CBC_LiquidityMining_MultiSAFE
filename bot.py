@@ -655,7 +655,6 @@ def build_weekly_report_for_safe(safe: str) -> str:
 # main
 # ===============================
 def main():
-    
     mode = get_report_mode()
     print(f"DBG REPORT_MODE={mode}", flush=True)
 
