@@ -1,3 +1,5 @@
 # CBC_LiquidityMining_MultiSAFE
 requests
 pytz
+gspread
+google-auth
