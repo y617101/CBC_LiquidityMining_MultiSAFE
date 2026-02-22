@@ -485,8 +485,9 @@ def load_config():
 # ================================
 # Daily (layout updated, logic fixed)
 # ================================
-def build_daily_report_for_safe(safe: str):
-    end_dt = get_period_end_jst()
+def build_daily_report_for_safe(safe: str, end_dt=None):
+    if end_dt is None:
+        end_dt = get_period_end_jst()
     start_dt = end_dt - timedelta(days=1)
     positions_open = fetch_positions(safe, active=True)
     positions_exited = fetch_positions(safe, active=False)
@@ -776,13 +777,26 @@ def main():
                 report = build_weekly_report_for_safe(safe)
                 send_telegram(report, chat_id)
             else:
-                report, fee_usd, end_dt = build_daily_report_for_safe(safe)
-
-                # ① Telegram
-                send_telegram(report, chat_id)
-
-                # ② Sheets（DAILY_WIDE）
-                append_daily_wide_numbered(end_dt, name, safe, fee_usd)
+                backfill_once = (os.getenv("BACKFILL_ONCE") or "").strip() == "1"
+                backfill_days = int(os.getenv("BACKFILL_DAYS") or "0")
+                
+                if backfill_once and backfill_days > 0:
+                    print("DBG: start backfill", flush=True)
+                    
+                    for d in range(backfill_days, 0, -1):
+                        bf_end_dt = get_period_end_jst() - timedelta(days=d)
+                        # 過去分はTelegram送らない
+                        _report, fee_usd, _ = build_daily_report_for_safe(safe, bf_end_dt)
+                        
+                        append_daily_wide_numbered(bf_end_dt, name, safe, fee_usd)
+                    print("DBG: backfill done", flush=True)
+                
+                else:
+                    # 通常運転
+                    report, fee_usd, end_dt = build_daily_report_for_safe(safe)
+                    
+                    send_telegram(report, chat_id)
+                    append_daily_wide_numbered(end_dt, name, safe, fee_usd)
 
         except Exception as e:
             print(f"error name={name} safe={safe}: {e}", flush=True)
