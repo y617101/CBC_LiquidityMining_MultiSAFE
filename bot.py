@@ -3,12 +3,42 @@ import json
 import html
 import requests
 from datetime import datetime, timedelta, timezone
+import gspread
+from google.oauth2.service_account import Credentials
 
 # ================================
 # Constants
 # ================================
 JST = timezone(timedelta(hours=9))
 REVERT_API = "https://api.revert.finance"
+JST = timezone(timedelta(hours=9))
+REVERT_API = "https://api.revert.finance"
+
+# ================================
+# Google Sheets
+# ================================
+
+def get_gsheet():
+    creds = Credentials.from_service_account_file(
+        "gcp_service_account.json",
+        scopes=["https://www.googleapis.com/auth/spreadsheets"],
+    )
+    client = gspread.authorize(creds)
+    sheet_id = os.getenv("GOOGLE_SHEET_ID")
+    return client.open_by_key(sheet_id)
+
+def test_write_one_row():
+    sh = get_gsheet()
+    tab_name = os.getenv("GOOGLE_SHEET_DAILY_TAB", "DAILY_LEDGER")
+    ws = sh.worksheet(tab_name)
+
+    now = datetime.now(JST).strftime("%Y-%m-%d %H:%M")
+    ws.append_row([now, "TEST", "0x0", 1.23], value_input_option="USER_ENTERED")
+    print("✅ Sheets test write OK")
+
+# ================================
+# Token Symbol Map (Base)
+ADDRESS_SYMBOL_MAP = {
 
 # Token Symbol Map (Base)
 ADDRESS_SYMBOL_MAP = {
@@ -613,6 +643,9 @@ def build_weekly_report_for_safe(safe: str) -> str:
 # main
 # ===============================
 def main():
+    test_write_one_row()
+    return
+    
     mode = get_report_mode()
     print(f"DBG REPORT_MODE={mode}", flush=True)
 
