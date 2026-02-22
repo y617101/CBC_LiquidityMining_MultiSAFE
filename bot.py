@@ -151,7 +151,7 @@ def send_telegram(text: str, chat_id: str = None):
             json={
                 "chat_id": chat_id,
                 "text": chunk,
-                # parse_mode omitted to keep text fully copyable
+                "parse_mode": "HTML",
                 "disable_web_page_preview": True,
             },
             timeout=30,
@@ -480,20 +480,18 @@ def build_daily_report_for_safe(safe: str):
         nft_fee_apr = calc_fee_apr_a(nft_apr_base, net)
 
         nft_url = f"https://app.uniswap.org/positions/v3/base/{nft_id}"
-
+        nft_link = f'<a href="{h(nft_url)}">{h(nft_id)}</a>'
+        
         nft_blocks.append(
             "\n"
-            "────────────────\n"
-            f"NFT {nft_id} ({nft_url})\n"
-            f"Status {status}\n"
-            "────────────────\n"
-            "\n"
+            "———————\n"
+            f"NFT {nft_link}\n"
+            f"Status {h(status)}\n"
+            "———————\n"
             "Net\n"
-            f"{fmt_money(net)}\n"
-            "\n"
+            f"{fmt_money(net)}\n\n"
             "蓄積手数料（未Claim）\n"
-            f"{fmt_money(fees_value)}\n"
-            "\n"
+            f"{fmt_money(fees_value)}\n\n"
             "Fee APR\n"
             f"{fmt_pct(nft_fee_apr)}\n"
         )
@@ -511,10 +509,10 @@ def build_daily_report_for_safe(safe: str):
         "Net合算\n"
         f"{fmt_money(net_total)}\n"
         "\n"
-        "────────────────\n"
+        "———————\n"
         "推定総収益（24h＋未Claim）\n"
         f"{fmt_money(apr_base_usd)}\n"
-        "────────────────\n"
+        "———————\n"
         "\n"
         "確定手数料（24h）\n"
         f"{fmt_money(fee_usd)}\n"
