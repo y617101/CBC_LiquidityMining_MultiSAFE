@@ -8,7 +8,6 @@ from datetime import datetime, timedelta, timezone
 import gspread
 from google.oauth2.service_account import Credentials
 
-
 # ================================
 # Constants
 # ================================
@@ -20,6 +19,9 @@ ADDRESS_SYMBOL_MAP = {
     "0x4200000000000000000000000000000000000006": "WETH",
     "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913": "USDC",
 }
+
+# Debug flags (global / safe)
+DEBUG_FEE_TRACE = (os.getenv("DEBUG_FEE_TRACE") or "").strip() == "1"
 
 
 # ================================
@@ -93,7 +95,7 @@ def get_report_mode() -> str:
     return (os.getenv("REPORT_MODE") or "DAILY").strip().upper()
 
 
-def get_period_end_jst(now: datetime | None = None) -> datetime:
+def get_period_end_jst(now=None) -> datetime:
     """
     Period end aligned to 09:00 JST (today 09:00 JST).
     """
@@ -128,16 +130,24 @@ def sheets_call(fn, *args, **kwargs):
     raise RuntimeError("Sheets quota 429 retry exhausted")
 
 
-def get_gsheet():
+def get_gsheet_client():
     creds = Credentials.from_service_account_file(
         "gcp_service_account.json",
         scopes=["https://www.googleapis.com/auth/spreadsheets"],
     )
-    client = gspread.authorize(creds)
+    return gspread.authorize(creds)
+
+
+def open_sheet(client):
     sheet_id = os.getenv("GOOGLE_SHEET_ID")
     if not sheet_id:
         raise RuntimeError("ENV missing: GOOGLE_SHEET_ID")
     return client.open_by_key(sheet_id)
+
+
+def get_daily_ws(sh):
+    tab_name = os.getenv("GOOGLE_SHEET_DAILY_TAB", "DAILY_WIDE")
+    return sh.worksheet(tab_name)
 
 
 # ================================
@@ -202,7 +212,7 @@ def fetch_positions(safe: str, active: bool = True):
     return r.json()
 
 
-def _normalize_positions(resp) -> list[dict]:
+def _normalize_positions(resp) -> list:
     """
     Revert positions API sometimes returns:
     - list
@@ -305,11 +315,13 @@ def calc_fee_apr_a(fee_24h_usd, net_usd):
 # 24h fee calc (Daily)
 # ================================
 def calc_fee_usd_24h_from_cash_flows(pos_list_all, now_dt: datetime):
+    """
+    24h窓（JST 09:00 → 翌09:00）で「確定手数料USD」を集計
+    - type に "fee"/"collect"/"claim" を含むものを対象（広め）
+    - amount_usd が無ければ prices×数量 でフォールバック
+    """
     end_dt = get_period_end_jst(now_dt)
     start_dt = end_dt - timedelta(days=1)
-
-    # ★ここで必ず初期化（関数ローカルで固定）
-    DEBUG_FEE_TRACE = (os.getenv("DEBUG_FEE_TRACE") or "").strip() == "1"
 
     total = 0.0
     total_count = 0
@@ -343,17 +355,6 @@ def calc_fee_usd_24h_from_cash_flows(pos_list_all, now_dt: datetime):
 
             amt_usd = to_f(cf.get("amount_usd"))
 
-            if DEBUG_FEE_TRACE:
-                print(
-                    "DBG_FEE",
-                    "nft=", nft_id,
-                    "type=", t,
-                    "ts_jst=", ts_dt.strftime("%Y-%m-%d %H:%M"),
-                    "amount_usd_raw=", cf.get("amount_usd"),
-                    "flush=True",
-                    flush=True
-                )
-
             if amt_usd is None:
                 prices = cf.get("prices") or {}
                 p0 = to_f((prices.get("token0") or {}).get("usd")) or 0.0
@@ -384,8 +385,20 @@ def calc_fee_usd_24h_from_cash_flows(pos_list_all, now_dt: datetime):
             if not (amt_usd > 0):
                 continue
 
+            if DEBUG_FEE_TRACE:
+                print(
+                    "DBG_FEE",
+                    "nft=", nft_id,
+                    "type=", t,
+                    "ts_jst=", ts_dt.strftime("%Y-%m-%d %H:%M"),
+                    "amount_usd_raw=", cf.get("amount_usd"),
+                    "final_usd=", amt_usd,
+                    flush=True
+                )
+
             total += amt_usd
             total_count += 1
+
             fee_by_nft[nft_id] = float(fee_by_nft.get(nft_id, 0.0) or 0.0) + amt_usd
             count_by_nft[nft_id] = int(count_by_nft.get(nft_id, 0) or 0) + 1
 
@@ -499,10 +512,8 @@ def build_daily_report_for_safe(safe: str, end_dt=None, block_level: str = "FULL
     pos_list_all += pos_list_open
     pos_list_all += pos_list_exited
 
-    now_dt = end_dt
-
     fee_usd, fee_count, fee_by_nft, _, start_dt, end_dt = calc_fee_usd_24h_from_cash_flows(
-        pos_list_all, now_dt
+        pos_list_all, end_dt
     )
 
     nft_blocks = []
@@ -659,11 +670,7 @@ def build_weekly_report_for_safe(safe: str) -> str:
 # Sheets: DAILY_WIDE
 # Row1: No, Row2: SAFE name, Row3: safe_address, Row4+: daily values
 # ================================
-def append_daily_wide_numbered(period_end_jst, safe_name, safe_address, claimed_usd_24h):
-    sh = get_gsheet()
-    tab_name = os.getenv("GOOGLE_SHEET_DAILY_TAB", "DAILY_WIDE")
-    ws = sh.worksheet(tab_name)
-
+def append_daily_wide_numbered(ws, period_end_jst, safe_name, safe_address, claimed_usd_24h):
     # Sheets表示寄せ（例: 2026-02-22 9:00）
     period_key = f"{period_end_jst.strftime('%Y-%m-%d')} {period_end_jst.hour}:{period_end_jst.strftime('%M')}"
 
@@ -727,17 +734,18 @@ def append_daily_wide_numbered(period_end_jst, safe_name, safe_address, claimed_
         if not str(existing or "").strip():
             sheets_call(ws.update_cell, 3, col_idx, safe_address)
 
-    # --- ここから値を書き込む ---
-    values = sheets_call(ws.get_all_values) or []
-    header_names = values[1] if len(values) >= 2 else ["period_end_jst"]
+    # ここ以降で列番号が必要なので、header_names だけ最新で作る
+    # （上で追加した場合はローカルheader_namesに反映済みなので再readは不要）
     col_idx = header_names.index(safe_name) + 1  # 1-based
 
+    # --- 日付行（4行目以降）を探す（ローカルvaluesで） ---
     row_idx = None
     for i, row in enumerate(values[3:], start=4):
         if len(row) >= 1 and row[0].strip() == period_key:
             row_idx = i
             break
 
+    # 無ければ新規行追加
     if row_idx is None:
         sheets_call(ws.append_row, [period_key], value_input_option="USER_ENTERED")
         row_idx = len(values) + 1
@@ -746,7 +754,7 @@ def append_daily_wide_numbered(period_end_jst, safe_name, safe_address, claimed_
     print("DBG: DAILY_WIDE updated", period_key, safe_name, claimed_usd_24h, flush=True)
 
 
-def maybe_sort_daily_wide_by_date():
+def maybe_sort_daily_wide_by_date(ws):
     """
     任意：A列で昇順ソート（見た目を時系列に整える）
     ENV: SHEETS_SORT_BY_DATE=1
@@ -754,18 +762,13 @@ def maybe_sort_daily_wide_by_date():
     if (os.getenv("SHEETS_SORT_BY_DATE") or "").strip() != "1":
         return
 
-    sh = get_gsheet()
-    tab_name = os.getenv("GOOGLE_SHEET_DAILY_TAB", "DAILY_WIDE")
-    ws = sh.worksheet(tab_name)
-
     values = sheets_call(ws.get_all_values) or []
     if len(values) <= 4:
-        return  # データ少なすぎ
+        return
 
     last_row = len(values)
     last_col = max((len(r) for r in values), default=1)
 
-    # A4 から最終行まで、A列で昇順
     try:
         sheets_call(
             ws.sort,
@@ -777,6 +780,9 @@ def maybe_sort_daily_wide_by_date():
         print(f"DBG: sort skipped err={e}", flush=True)
 
 
+# ================================
+# main
+# ================================
 def main():
     mode = get_report_mode()
     print(f"DBG REPORT_MODE={mode}", flush=True)
@@ -801,9 +807,13 @@ def main():
 
     only_name_raw = os.getenv("BACKFILL_ONLY_NAME")
     only_name = (only_name_raw or "").strip().upper()
-
     if only_name:
         print(f"DBG BACKFILL_ONLY_NAME raw={only_name_raw!r} parsed={only_name!r}", flush=True)
+
+    # Sheets: 1回だけ初期化（429対策）
+    client = get_gsheet_client()
+    sh = open_sheet(client)
+    ws = get_daily_ws(sh)
 
     for s in safes:
         name = (s.get("name") or "NONAME").strip()
@@ -812,15 +822,15 @@ def main():
         safe = s.get("safe_address")
         chat_id = s.get("telegram_chat_id")
 
-        if only_name:
-            if name_upper != only_name:
-                print(f"DBG: skip by BACKFILL_ONLY_NAME name={name!r}", flush=True)
-                continue
+        if only_name and name_upper != only_name:
+            print(f"DBG: skip by BACKFILL_ONLY_NAME name={name!r}", flush=True)
+            continue
 
         if not safe:
             print(f"skip: missing safe name={name}", flush=True)
             continue
 
+        # Backfill中はTelegram不要、通常運用時はchat_id必須
         if (not backfill_once or backfill_days <= 0) and not chat_id:
             print(f"skip: missing chat_id name={name}", flush=True)
             continue
@@ -835,7 +845,6 @@ def main():
                     print(f"DBG: start backfill name={name}", flush=True)
 
                     for d in range(backfill_days, 0, -1):
-                        # ★ offset 対応（ここが今回の肝）
                         bf_end_dt = get_period_end_jst() - timedelta(days=backfill_offset + d)
                         bf_key = bf_end_dt.strftime("%Y-%m-%d %H:%M")
 
@@ -843,10 +852,11 @@ def main():
                             _report, fee_usd, _ = build_daily_report_for_safe(
                                 safe, bf_end_dt, block_level="NONE"
                             )
-                            append_daily_wide_numbered(bf_end_dt, name, safe, fee_usd)
-
+                            append_daily_wide_numbered(ws, bf_end_dt, name, safe, fee_usd)
                             print(f"DBG: backfill ok {name} {bf_key} {fee_usd}", flush=True)
-                            time.sleep(0.6)
+
+                            # 429回避：少し待つ
+                            time.sleep(0.8)
 
                         except Exception as day_e:
                             msg = str(day_e)
@@ -857,14 +867,14 @@ def main():
                             continue
 
                     print(f"DBG: backfill done name={name}", flush=True)
-
-                    # 任意：並びを整える（必要なら ENV でON）
-                    maybe_sort_daily_wide_by_date()
+                    maybe_sort_daily_wide_by_date(ws)
 
                 else:
                     report, fee_usd, end_dt = build_daily_report_for_safe(safe)
+
+                    # Telegram → Sheets の順（配信優先）
                     send_telegram(report, chat_id)
-                    append_daily_wide_numbered(end_dt, name, safe, fee_usd)
+                    append_daily_wide_numbered(ws, end_dt, name, safe, fee_usd)
 
         except Exception as e:
             print(f"error name={name} safe={safe}: {e}", flush=True)
