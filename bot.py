@@ -654,6 +654,43 @@ def build_weekly_report_for_safe(safe: str) -> str:
     return report
 
 # ===============================
+# Sheets: append with duplicate check
+# ===============================
+def append_daily_row(period_end_jst, safe_name, safe_address, claimed_usd_24h):
+    sh = get_gsheet()
+    tab_name = os.getenv("GOOGLE_SHEET_DAILY_TAB", "DAILY_LEDGER")
+    ws = sh.worksheet(tab_name)
+
+    period_str = period_end_jst.strftime("%Y-%m-%d %H:%M")
+    safe_lc = (safe_address or "").strip().lower()
+
+    # 既存チェック（period_end_jst + safe_address が同じなら書かない）
+    values = ws.get_all_values()
+    if values and len(values) >= 2:
+        header = values[0]
+        try:
+            idx_end = header.index("period_end_jst")
+            idx_safe = header.index("safe_address")
+        except ValueError:
+            # ヘッダー名が違う/無いときの保険（列位置で見る）
+            idx_end, idx_safe = 0, 2
+
+        for row in values[1:]:
+            if len(row) <= max(idx_end, idx_safe):
+                continue
+            if row[idx_end].strip() == period_str and row[idx_safe].strip().lower() == safe_lc:
+                print("DBG: skip duplicate daily row:", period_str, safe_lc, flush=True)
+                return
+
+    # 追記
+    ws.append_row(
+        [period_str, safe_name, safe_address, float(claimed_usd_24h)],
+        value_input_option="USER_ENTERED",
+    )
+    print("DBG: appended daily row:", period_str, safe_lc, flush=True)
+
+
+# ===============================
 # main
 # ===============================
 def main():
@@ -678,11 +715,15 @@ def main():
         try:
             if mode == "WEEKLY":
                 report = build_weekly_report_for_safe(safe)
+                send_telegram(report, chat_id)
             else:
                 report, fee_usd, end_dt = build_daily_report_for_safe(safe)
 
-            send_telegram(report, chat_id)
-            append_daily_row(end_dt, name, safe, fee_usd)
+                # ① Telegram
+                send_telegram(report, chat_id)
+
+                # ② Sheets（重複防止付き）
+                append_daily_row(end_dt, name, safe, fee_usd)
 
         except Exception as e:
             print(f"error name={name} safe={safe}: {e}", flush=True)
@@ -696,6 +737,7 @@ def main():
                 )
             except Exception:
                 pass
+
 
 if __name__ == "__main__":
     main()
