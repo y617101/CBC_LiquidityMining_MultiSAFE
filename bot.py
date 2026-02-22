@@ -574,7 +574,7 @@ def build_daily_report_for_safe(safe: str):
         "09:00 JST\n"
     )
 
-    return report, fee_usd
+    return report, fee_usd, end_dt
 
 # ===============================
 # Weekly (layout updated, logic fixed)
@@ -677,7 +677,7 @@ def main():
             if mode == "WEEKLY":
                 report = build_weekly_report_for_safe(safe)
             else:
-                report, fee_usd = build_daily_report_for_safe(safe)
+                report, fee_usd, end_dt = build_daily_report_for_safe(safe)
 
             send_telegram(report, chat_id)
             append_daily_row(end_dt, safe_name, safe, fee_usd)
