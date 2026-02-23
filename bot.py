@@ -653,7 +653,8 @@ def build_daily_message(
 
     safe_link = fmt_safe_link(safe_address)
 
-    msg = (
+    msg = 
+    (
         "🚀 CBC Liquidity Mining — Daily\n"
         f"Period End: {period_end.strftime('%Y-%m-%d %H:%M')} JST\n"
         safe_link = fmt_safe_link(safe_address)  # 0xB1A76*****89734 の青リンク
@@ -704,7 +705,8 @@ def build_weekly_message(
 
     safe_link = fmt_safe_link(safe_address)
 
-    msg = (
+    msg = 
+(
         "🚀 CBC Liquidity Mining — Weekly Settlement\n"
         f"Period End: {period_end.strftime('%Y-%m-%d %H:%M')} JST\n"
         safe_link = fmt_safe_link(safe_address)  # 0xB1A76*****89734 の青リンク
