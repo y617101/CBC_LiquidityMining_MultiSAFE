@@ -1059,7 +1059,8 @@ def main():
                     net_total=net_total,
                     week_claimed=week_claimed,
                     prev_week_claimed=prev_week_claimed,
-                    history=safe_hist,
+                    mtd_confirmed=mtd_confirmed,
+                    all_confirmed=all_confirmed,
                     pos_open=pos_open,
                 )
                 send_telegram(msg, chat_id)
