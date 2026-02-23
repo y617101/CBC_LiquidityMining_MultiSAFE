@@ -845,26 +845,30 @@ def compute_today_metrics(
     pos_exited = _normalize_positions(resp_exited)
     pos_all = pos_open + pos_exited
 
-    dbg("DBG pos_open len=", len(pos_open), "pos_exited len=", len(pos_exited))
+    dbg("DBG today normalize open/exited lens:", len(pos_open), len(pos_exited))
+    if len(pos_open) == 0:
+        dbg("DBG today open raw (first 800):", str(resp_open)[:800])
 
     net_total = 0.0
     unclaimed = 0.0
-    for pos in pos_open:
-        net_total += float(to_f(calc_net_usd(pos), 0.0) or 0.0)
+    for pos in (pos_open or []):
+        net = calc_net_usd(pos)
+        net_total += float(net) if net is not None else 0.0
         unclaimed += float(to_f(pos.get("fees_value"), 0.0) or 0.0)
 
     claimed_24h, _tx_24h = calc_claimed_usd_in_window(pos_all, start_dt, period_end)
 
     return pos_open, pos_all, float(net_total), float(claimed_24h), float(unclaimed)
-    
-dbg("DBG normalize open/exited lens:", len(pos_open), len(pos_exited))
-if len(pos_open) == 0:
-    dbg("DBG open raw (first 800):", str(positions_open)[:800])
+
 
 def compute_weekly_confirmed_totals(
     safe_address: str,
     period_end: datetime,
 ) -> Tuple[List[dict], float, float, float]:
+    """
+    Returns:
+      pos_open, net_total_usd, week_claimed_total, prev_week_claimed_total
+    """
     start_this = period_end - timedelta(days=7)
     end_this = period_end
     start_prev = period_end - timedelta(days=14)
@@ -880,10 +884,12 @@ def compute_weekly_confirmed_totals(
     dbg("DBG weekly normalize open/exited lens:", len(pos_open), len(pos_exited))
     if len(pos_all) == 0:
         dbg("DBG weekly pos_all empty. open raw (first 800):", str(resp_open)[:800])
+        dbg("DBG weekly pos_all empty. exited raw (first 800):", str(resp_exited)[:800])
 
     net_total = 0.0
-    for pos in pos_open:
-        net_total += float(to_f(calc_net_usd(pos), 0.0) or 0.0)
+    for pos in (pos_open or []):
+        net = calc_net_usd(pos)
+        net_total += float(net) if net is not None else 0.0
 
     week_claimed, _ = calc_claimed_usd_in_window(pos_all, start_this, end_this)
     prev_week_claimed, _ = calc_claimed_usd_in_window(pos_all, start_prev, end_prev)
