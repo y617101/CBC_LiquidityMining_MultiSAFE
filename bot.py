@@ -677,7 +677,7 @@ def build_nft_lines_revert_apr(pos_open: List[dict]) -> List[str]:
         if not nft_id:
             continue
 
-        status = "OUT OF RANGE" if pos.get("in_range") is False else "ACTIVE"
+        status = "RANGE OUT" if pos.get("in_range") is False else "ACTIVE"
         net = float(to_f(calc_net_usd(pos), 0.0) or 0.0)
         apr = float(get_revert_fee_apr(pos) or 0.0)
 
