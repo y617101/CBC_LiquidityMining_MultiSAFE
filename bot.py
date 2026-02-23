@@ -18,6 +18,22 @@ REVERT_API = "https://api.revert.finance"
 # ================================
 # Small helpers
 # ================================
+def build_basescan_addr_link(addr: str) -> str:
+    a = (addr or "").strip()
+    return f"https://basescan.org/address/{a}"
+
+def mask_safe_addr(addr: str) -> str:
+    a = (addr or "").strip()
+    # 0x + 先頭5 + 末尾4 を満たさない短いアドレスはそのまま
+    if len(a) <= (2 + 5 + 4):
+        return a
+    return f"{a[:2+5]}*****{a[-4:]}"  # 例: 0xB1A76*****89734
+
+def fmt_safe_link(addr: str) -> str:
+    url = build_basescan_addr_link(addr)
+    label = mask_safe_addr(addr)
+    return f'<a href="{h(url)}">{h(label)}</a>'
+    
 def build_uniswap_link_base(nft_id: str) -> str:
     return f"https://app.uniswap.org/positions/v3/base/{nft_id}"
 
@@ -640,20 +656,19 @@ def build_daily_message(
     history: List[List[str]],
     nft_lines: List[str],
 ) -> str:
-    # emitted-based 7d avg APR (denominator = CURRENT net)
     emitted_7d = sum_last_n_days(history, 7, 6)
     avg_emitted_7d = emitted_7d / 7.0 if emitted_7d > 0 else 0.0
     apr_7d = (avg_emitted_7d / net_total) * 365 * 100 if net_total > 0 else 0.0
 
     mtd_emitted = sum_month_to_date(history, period_end, 6)
+    avg_emitted_day_7d = avg_emitted_7d
 
-    avg_emitted_day_7d = avg_emitted_7d  # 表示名だけ
-    # ALL-TIMEはDailyでは省略（要望のテンプレに合わせる）
+    safe_link = fmt_safe_link(safe_address)
 
     msg = (
         "🚀 CBC Liquidity Mining — Daily\n"
         f"Period End: {period_end.strftime('%Y-%m-%d %H:%M')} JST\n"
-        f"SAFE {safe_address}\n"
+        f"SAFE {safe_link}\n"
         "────────────────\n\n"
         "🗓 今月累計DEX手数料収益\n"
         f"+{fmt_money(mtd_emitted)}\n\n"
@@ -672,6 +687,7 @@ def build_daily_message(
     )
     return msg
 
+
 def build_weekly_message(
     safe_address: str,
     period_end: datetime,
@@ -679,7 +695,6 @@ def build_weekly_message(
     history: List[List[str]],
     nft_lines: List[str],
 ) -> str:
-    # claimed (settlement)
     week_claimed = sum_last_n_days(history, 7, 4)
     prev_week_claimed = sum_prev_n_days(history, 7, 4)
     avg_claimed_day = week_claimed / 7.0 if week_claimed > 0 else 0.0
@@ -690,7 +705,6 @@ def build_weekly_message(
         sign = "+" if wow >= 0 else ""
         wow_txt = f"{sign}{wow:.1f}%"
 
-    # emitted stats
     emitted_7d = sum_last_n_days(history, 7, 6)
     avg_emitted_7d = emitted_7d / 7.0 if emitted_7d > 0 else 0.0
     apr_7d = (avg_emitted_7d / net_total) * 365 * 100 if net_total > 0 else 0.0
@@ -698,10 +712,12 @@ def build_weekly_message(
     mtd_emitted = sum_month_to_date(history, period_end, 6)
     all_emitted = sum_all_time(history, 6)
 
+    safe_link = fmt_safe_link(safe_address)
+
     msg = (
         "🚀 CBC Liquidity Mining — Weekly Settlement\n"
         f"Period End: {period_end.strftime('%Y-%m-%d %H:%M')} JST\n"
-        f"SAFE {safe_address}\n"
+        f"SAFE {safe_link}\n"
         "────────────────\n\n"
         "🎉 今週確定収益\n"
         f"{fmt_money(week_claimed)}\n"
