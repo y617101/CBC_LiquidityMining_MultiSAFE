@@ -626,8 +626,8 @@ def safe_apr_weighted(pos_open: List[dict]) -> float:
 # ================================
 # Confirmed fees aggregation (cash_flows)
 # ================================
-def _cf_iter(pos_list_all: List[dict]):
-    for pos in (pos_list_all or []):
+def _cf_iter(pos_all: List[dict]):
+    for pos in (pos_all or []):
         if not isinstance(pos, dict):
             continue
         nft_id = str(pos.get("nft_id") or "UNKNOWN")
@@ -639,7 +639,7 @@ def _cf_iter(pos_list_all: List[dict]):
                 yield nft_id, cf
 
 
-def calc_claimed_usd_in_window(pos_list_all: List[dict], start_dt: datetime, end_dt: datetime) -> Tuple[float, int]:
+def calc_claimed_usd_in_window(pos_all: List[dict], start_dt: datetime, end_dt: datetime) -> Tuple[float, int]:
     """
     confirmed total in window: sum USD for fees-collected/claimed-fees.
     Window: [start, end)
@@ -648,7 +648,7 @@ def calc_claimed_usd_in_window(pos_list_all: List[dict], start_dt: datetime, end
     count = 0
     seen = set()
 
-    for nft_id, cf in _cf_iter(pos_list_all):
+    for nft_id, cf in _cf_iter(pos_all):
         if not _is_claimed_type(cf.get("type")):
             continue
 
@@ -685,11 +685,11 @@ def calc_claimed_usd_in_window(pos_list_all: List[dict], start_dt: datetime, end
     return float(total), int(count)
 
 
-def calc_claimed_usd_by_nft_in_window(pos_list_all: List[dict], start_dt: datetime, end_dt: datetime) -> Dict[str, float]:
+def calc_claimed_usd_by_nft_in_window(pos_all: List[dict], start_dt: datetime, end_dt: datetime) -> Dict[str, float]:
     out: Dict[str, float] = {}
     seen = set()
 
-    for nft_id, cf in _cf_iter(pos_list_all):
+    for nft_id, cf in _cf_iter(pos_all):
         if not _is_claimed_type(cf.get("type")):
             continue
 
@@ -716,10 +716,10 @@ def calc_claimed_usd_by_nft_in_window(pos_list_all: List[dict], start_dt: dateti
     return out
 
 
-def calc_confirmed_all_time(pos_list_all: List[dict]) -> float:
+def calc_confirmed_all_time(pos_all: List[dict]) -> float:
     total = 0.0
     seen = set()
-    for nft_id, cf in _cf_iter(pos_list_all):
+    for nft_id, cf in _cf_iter(pos_all):
         if not _is_claimed_type(cf.get("type")):
             continue
         ts = _to_ts_sec(cf.get("timestamp"))
@@ -737,10 +737,10 @@ def calc_confirmed_all_time(pos_list_all: List[dict]) -> float:
     return float(total)
 
 
-def calc_confirmed_month_to_date(pos_list_all: List[dict], period_end: datetime) -> float:
+def calc_confirmed_month_to_date(pos_all: List[dict], period_end: datetime) -> float:
     pe = period_end.astimezone(JST)
     start_month = pe.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
-    total, _ = calc_claimed_usd_in_window(pos_list_all, start_month, pe)
+    total, _ = calc_claimed_usd_in_window(pos_all, start_month, pe)
     return float(total)
 
 
