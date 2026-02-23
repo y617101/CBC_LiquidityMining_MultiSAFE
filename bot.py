@@ -507,26 +507,50 @@ def safe_apr_weighted(pos_open: List[dict]) -> float:
 # ================================
 # Fees (USD) helpers (cash_flows)
 # ================================
-def _norm_cf_type(t: str) -> str:
-    s = _lower(t)
-    s = s.replace("_", "-").replace(" ", "-")
-    return s
-
-def _is_claimed_type(cf_type: str) -> bool:
-    t = _norm_cf_type(cf_type)
-    return t in ("fees-collected", "claimed-fees", "fee-collected", "feescollected", "claimedfees")
-
 def _get_cf_usd(cf: dict) -> Optional[float]:
-    # まず amount_usd、無ければUI系/hodl系も吸う
+    """
+    cash_flow から USD をできるだけ頑丈に拾う。
+    - 直接 float/int/数値文字列
+    - 1段ネスト(dict)も拾う
+    """
+    if not isinstance(cf, dict):
+        return None
+
+    # まずは「強い候補」を優先
     candidates = [
-        "amount_usd", "amountUsd", "value_usd", "valueUsd", "usd",
-        "hodl_value", "hodl_value_usd", "hodlValue", "hodlValueUsd",
-        "hodl_usd", "hodlUsd",
+        "hodl_value", "hodl_value_usd",
+        "value_usd", "amount_usd",
+        "usd_value", "usd",
+        "valueUsd", "amountUsd", "hodlValueUsd", "hodlValue",
+        "amountUSD", "valueUSD",
     ]
     for k in candidates:
-        v = to_f(cf.get(k))
-        if v is not None:
-            return float(v)
+        v = cf.get(k)
+        fv = to_f(v)
+        if fv is not None:
+            return float(fv)
+
+        # 1段ネスト dict を救う（例: usd:{value:...} みたいな形）
+        if isinstance(v, dict):
+            for kk in candidates:
+                fv2 = to_f(v.get(kk))
+                if fv2 is not None:
+                    return float(fv2)
+
+            # dict内の「キー名にusdが含まれる数値」を拾う（最後の保険）
+            for kk, vv in v.items():
+                if "usd" in str(kk).lower():
+                    fv3 = to_f(vv)
+                    if fv3 is not None:
+                        return float(fv3)
+
+    # 最後の保険：cf直下のキーに usd を含む数値を拾う
+    for kk, vv in cf.items():
+        if "usd" in str(kk).lower():
+            fv = to_f(vv)
+            if fv is not None:
+                return float(fv)
+
     return None
 
 def calc_claimed_usd_in_window(pos_list_all: List[dict], start_dt: datetime, end_dt: datetime) -> Tuple[float, int]:
@@ -548,6 +572,15 @@ def calc_claimed_usd_in_window(pos_list_all: List[dict], start_dt: datetime, end
                 continue
             if not _is_claimed_type(cf.get("type")):
                 continue
+
+            if (os.getenv("DEBUG") or "").strip() == "1":
+                dbg("---- CLAIM CF DETECTED ----")
+                dbg("type:", cf.get("type"))
+                dbg("timestamp raw:", cf.get("timestamp"))
+                dbg("timestamp parsed:", _to_ts_sec(cf.get("timestamp")))
+                dbg("tx_hash:", _get_tx_hash(cf))
+                dbg("keys:", list(cf.keys()))
+                dbg("usd extracted:", _get_cf_usd(cf))
 
             ts = _to_ts_sec(cf.get("timestamp"))
             if ts is None:
