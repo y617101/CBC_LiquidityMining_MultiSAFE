@@ -36,53 +36,28 @@ def _is_claimed_type(cf_type) -> bool:
 
 def _get_cf_usd(cf: dict):
     """
-    Prefer API-provided USD fields if present.
-    Fallback to rough calc using collected token amounts + price (debug only).
+    Use ONLY Revert API-provided USD fields.
+    Do NOT fallback to manual WETH×price calculation.
     """
     usd_keys = [
-    # まず「イベント確定USD」を優先
-    "usd",
-    "amount_usd","amountUsd","amountUSD",
-    "value_usd","valueUsd",
-    "usd_value","usdValue",
+        "usd",
+        "amount_usd", "amountUsd", "amountUSD",
+        "value_usd", "valueUsd",
+        "usd_value", "usdValue",
+        # hodl系は精算用途では使わない（ズレるため）
+        # "hodl_value", "hodl_value_usd", "hodlValue", "hodlValueUsd",
+    ]
 
-    # hodl系は最後（精算用途では原則使わない）
-    "hodl_value","hodl_value_usd","hodlValue","hodlValueUsd",
+    for k in usd_keys:
+        v = cf.get(k)
+        if v not in (None, ""):
+            try:
+                return float(v)
+            except Exception:
+                pass
 
-        usd_keys = [
-            "usd",
-            "amount_usd","amountUsd","amountUSD",
-            "value_usd","valueUsd",
-            "usd_value","usdValue",
-            "hodl_value","hodl_value_usd","hodlValue","hodlValueUsd",
-        ]
-
-    # fallback
-    try:
-        amt0 = float(cf.get("collected_fees_token0") or 0)
-    except:
-        amt0 = 0.0
-
-    try:
-        amt1 = float(cf.get("collected_fees_token1") or 0)
-    except:
-        amt1 = 0.0
-
-    try:
-        price = float(cf.get("price") or 0)
-    except:
-        price = 0.0
-
-    print("DEBUG USD calc:", amt0, amt1, price, flush=True)
-
-    usd = 0.0
-    if amt0 > 0 and price > 0:
-        usd += amt0 * price
-    if amt1 > 0:
-        usd += amt1
-
-    return usd if usd > 0 else None
-
+    # APIがUSDを持っていない場合は 0 扱い（自前換算しない）
+    return 0.0
 
 # ================================
 # Constants
