@@ -84,6 +84,62 @@ def _get_cf_usd(cf: dict) -> float:
 
     usd = amt0 * usd0 + amt1 * usd1
     return float(usd)
+
+def _cf_dt_jst(cf: dict) -> Optional[datetime]:
+    ts_sec = _to_ts_sec(cf.get("timestamp") or cf.get("ts") or cf.get("time"))
+    if not ts_sec:
+        return None
+    return datetime.fromtimestamp(int(ts_sec), tz=JST)
+
+def pick_confirmed_cf(cash_flows, period_start: datetime, period_end: datetime) -> List[dict]:
+    """
+    confirmed = fees-collected / claimed-fees
+    同一txで両方ある場合は二重計上しない（claimed-fees優先）
+    窓は [period_start, period_end)
+    """
+    rows = []
+
+    for cf in (cash_flows or []):
+        t = _norm_cf_type(cf.get("type"))
+        if not is_claimed_type(t):
+            continue
+
+        dt = _cf_dt_jst(cf)
+        if not dt:
+            continue
+        if not (period_start <= dt < period_end):
+            continue
+
+        txh = _get_tx_hash(cf).lower()
+        nft = str(cf.get("nft_id") or cf.get("token_id") or cf.get("tokenId") or "").strip()
+        usd = _get_cf_usd(cf)
+
+        rows.append({
+            "type": t,
+            "dt_jst": dt,
+            "tx_hash": txh,
+            "nft_id": nft,
+            "usd": float(usd or 0.0),
+            "raw": cf,
+        })
+
+    # 同一tx + nft は1回だけにする（claimed-fees優先）
+    grouped = {}
+    for r in rows:
+        k = (r["tx_hash"], r["nft_id"])
+        grouped.setdefault(k, []).append(r)
+
+    picked = []
+    for _, arr in grouped.items():
+        claimed = [x for x in arr if x["type"] == "claimed-fees"]
+        if claimed:
+            picked.append(max(claimed, key=lambda x: x["usd"]))
+        else:
+            picked.append(max(arr, key=lambda x: x["usd"]))
+
+    return picked
+
+
 # ================================
 # Constants
 # ================================
