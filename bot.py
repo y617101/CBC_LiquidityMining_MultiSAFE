@@ -28,20 +28,55 @@ def _is_claimed_type(cf_type) -> bool:
     )
 
 def _get_cf_usd(cf: dict):
-    keys = [
+    """
+    Extract USD value from claimed-fees cash_flow.
+    If USD not present, compute from token amounts × price.
+    """
+    # ① まず直接USDキーを探す
+    usd_keys = [
         "hodl_value", "hodl_value_usd", "hodlValue", "hodlValueUsd",
         "usd_value", "usdValue", "value_usd", "valueUsd",
         "amount_usd", "amountUsd", "amountUSD", "usd",
     ]
-    for k in keys:
+    for k in usd_keys:
         v = cf.get(k)
         if v is not None:
             try:
                 return float(v)
             except:
                 pass
-    return None
 
+    # ② なければ token数量 × price で算出
+    amt0 = cf.get("collected_fees_token0") or cf.get("amount0")
+    amt1 = cf.get("collected_fees_token1") or cf.get("amount1")
+
+    try:
+        amt0 = float(amt0 or 0)
+        amt1 = float(amt1 or 0)
+    except:
+        return None
+
+    price = cf.get("price")
+
+    try:
+        price = float(price) if price is not None else None
+    except:
+        price = None
+
+    # Uniswap v3 WETH/USDC の場合：
+    # token0 = WETH
+    # token1 = USDC
+    # price = WETH price in USDC
+
+    usd = 0.0
+
+    if amt0 and price:
+        usd += amt0 * price
+
+    if amt1:
+        usd += amt1  # USDCはそのままUSD
+
+    return usd if usd > 0 else None
 # ================================
 # Constants
 # ================================
