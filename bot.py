@@ -995,7 +995,7 @@ def compute_weekly_confirmed_metrics(
     prev_week_total = float(sum((confirmed_by_nft_prev or {}).values()))
 
     mtd_confirmed = calc_confirmed_month_to_date(pos_all, period_end)
-    all_confirmed = calc_confirmed_all_time(pos_all)
+    all_time = calc_confirmed_all_time(pos_list_all, period_end)
 
     dbg("DBG weekly confirmed this/prev:", week_total, prev_week_total)
     dbg("DBG weekly mtd/all:", mtd_confirmed, all_confirmed)
