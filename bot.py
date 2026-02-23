@@ -4,7 +4,7 @@ import html
 import time
 import requests
 from datetime import datetime, timedelta, timezone, date
-from typing import Any, Dict, List, Optional, Tuple
+from typing import List, Optional, Tuple
 
 import gspread
 from google.oauth2.service_account import Credentials
@@ -76,10 +76,6 @@ def get_period_end_jst(now: Optional[datetime] = None) -> datetime:
         else:
             now = now.astimezone(JST)
     return now.replace(hour=9, minute=0, second=0, microsecond=0)
-
-def today_jst(now: Optional[datetime] = None) -> date:
-    now = now or datetime.now(JST)
-    return now.astimezone(JST).date()
 
 def pick_mode_auto(now: Optional[datetime] = None) -> str:
     """
@@ -179,21 +175,12 @@ def open_sheet(client):
         raise RuntimeError("ENV missing: GOOGLE_SHEET_ID")
     return client.open_by_key(sheet_id)
 
+# ---- DAILY_LOG (縦) ----
 def get_log_ws(sh):
     tab_name = os.getenv("GOOGLE_SHEET_LOG_TAB", "DAILY_LOG")
     return sh.worksheet(tab_name)
 
 def ensure_log_header(ws):
-    """
-    Log schema (one row per SAFE per day):
-    A: period_end_jst (YYYY-MM-DD HH:MM)
-    B: safe_name
-    C: safe_address
-    D: net_total_usd
-    E: claimed_24h_usd
-    F: unclaimed_usd
-    G: emitted_usd (simple proxy)
-    """
     values = sheets_call(ws.get_all_values) or []
     if values and values[0] and values[0][0].strip().lower() == "period_end_jst":
         return
@@ -213,7 +200,6 @@ def _parse_period_key(s: str) -> Optional[datetime]:
     s = (s or "").strip()
     if not s:
         return None
-    # expected "YYYY-MM-DD HH:MM"
     try:
         dt = datetime.strptime(s, "%Y-%m-%d %H:%M")
         return dt.replace(tzinfo=JST)
@@ -224,7 +210,7 @@ def read_log_rows(ws) -> List[List[str]]:
     values = sheets_call(ws.get_all_values) or []
     if len(values) <= 1:
         return []
-    return values[1:]  # without header
+    return values[1:]
 
 def upsert_daily_log_row(
     ws,
@@ -236,15 +222,11 @@ def upsert_daily_log_row(
     unclaimed: float,
     emitted: float,
 ):
-    """
-    If same (period_end, safe_address) already exists -> update.
-    else append.
-    """
     period_key = period_end.strftime("%Y-%m-%d %H:%M")
     rows = read_log_rows(ws)
 
     target_row_idx = None
-    for i, row in enumerate(rows, start=2):  # sheet row index (header=1)
+    for i, row in enumerate(rows, start=2):  # header row=1
         if len(row) < 3:
             continue
         if row[0].strip() == period_key and row[2].strip().lower() == safe_address.strip().lower():
@@ -268,6 +250,84 @@ def upsert_daily_log_row(
         rng = f"A{target_row_idx}:G{target_row_idx}"
         sheets_call(ws.update, range_name=rng, values=[record])
         dbg("DBG: updated log row", period_key, safe_name)
+
+# ---- DAILY_WIDE (横) ----
+def get_daily_wide_ws(sh):
+    tab_name = os.getenv("GOOGLE_SHEET_DAILY_WIDE_TAB", "DAILY_WIDE")
+    return sh.worksheet(tab_name)
+
+def append_daily_wide_numbered(ws, period_end_jst, safe_name, safe_address, claimed_usd_24h):
+    # スクショ寄せ: 2026-02-23 9:00
+    period_key = f"{period_end_jst.strftime('%Y-%m-%d')} {period_end_jst.hour}:{period_end_jst.strftime('%M')}"
+
+    values = sheets_call(ws.get_all_values) or []
+
+    # 初期化（空）
+    if not values:
+        sheets_call(ws.update, range_name="A1", values=[["", 1]])
+        sheets_call(ws.update, range_name="A2", values=[["period_end_jst", safe_name]])
+        sheets_call(ws.update, range_name="A3", values=[["safe_address", safe_address]])
+        sheets_call(ws.update, range_name="A4", values=[[period_key, float(claimed_usd_24h)]])
+        print("DBG: initialized DAILY_WIDE", flush=True)
+        return
+
+    # ヘッダー確保
+    if len(values) < 2:
+        sheets_call(ws.update, range_name="A2", values=[["period_end_jst"]])
+        values = sheets_call(ws.get_all_values) or []
+    if len(values) < 3:
+        sheets_call(ws.update, range_name="A3", values=[["safe_address"]])
+        values = sheets_call(ws.get_all_values) or []
+
+    header_nums = values[0] if len(values) >= 1 else [""]
+    header_names = values[1] if len(values) >= 2 else ["period_end_jst"]
+    header_addrs = values[2] if len(values) >= 3 else ["safe_address"]
+
+    if not header_names or header_names[0] != "period_end_jst":
+        header_names = ["period_end_jst"] + header_names[1:]
+    if not header_addrs or header_addrs[0] != "safe_address":
+        header_addrs = ["safe_address"] + header_addrs[1:]
+
+    # SAFE列追加
+    if safe_name not in header_names:
+        current_safe_cols = max(0, len(header_names) - 1)  # A列除く
+        next_no = current_safe_cols + 1
+
+        max_len = max(len(header_nums), len(header_names), len(header_addrs))
+        header_nums += [""] * (max_len - len(header_nums))
+        header_names += [""] * (max_len - len(header_names))
+        header_addrs += [""] * (max_len - len(header_addrs))
+
+        header_nums.append(next_no)
+        header_names.append(safe_name)
+        header_addrs.append(safe_address)
+
+        sheets_call(ws.update, range_name="A1", values=[header_nums])
+        sheets_call(ws.update, range_name="A2", values=[header_names])
+        sheets_call(ws.update, range_name="A3", values=[header_addrs])
+
+        print("DBG: added SAFE column", safe_name, "no", next_no, flush=True)
+    else:
+        col_idx = header_names.index(safe_name) + 1  # 1-based
+        existing = header_addrs[col_idx - 1] if len(header_addrs) >= col_idx else ""
+        if not str(existing or "").strip():
+            sheets_call(ws.update_cell, 3, col_idx, safe_address)
+
+    col_idx = header_names.index(safe_name) + 1  # 1-based
+
+    # 日付行検索（4行目以降）
+    row_idx = None
+    for i, row in enumerate(values[3:], start=4):
+        if len(row) >= 1 and row[0].strip() == period_key:
+            row_idx = i
+            break
+
+    if row_idx is None:
+        sheets_call(ws.append_row, [period_key], value_input_option="USER_ENTERED")
+        row_idx = len(values) + 1
+
+    sheets_call(ws.update_cell, row_idx, col_idx, float(claimed_usd_24h))
+    print("DBG: DAILY_WIDE updated", period_key, safe_name, claimed_usd_24h, flush=True)
 
 # ================================
 # Revert API
@@ -355,7 +415,6 @@ def calc_net_usd(pos) -> Optional[float]:
 # Fees - claimed in window (USD)
 # ================================
 def _get_cf_usd_ui_first(cf: dict) -> Optional[float]:
-    # UI寄せ（候補を広めに）
     candidates = [
         "hodl_value",
         "hodl_value_usd",
@@ -376,11 +435,6 @@ def _get_cf_usd_ui_first(cf: dict) -> Optional[float]:
     return None
 
 def calc_claimed_usd_in_window(pos_list_all: List[dict], start_dt: datetime, end_dt: datetime) -> Tuple[float, int]:
-    """
-    Sum claimed fees (USD) in [start_dt, end_dt)
-    types: fees-collected / claimed-fees
-    De-dup by (tx_hash, type) to avoid open+exited double count
-    """
     total = 0.0
     count = 0
     seen = set()  # (tx_hash, type)
@@ -416,7 +470,6 @@ def calc_claimed_usd_in_window(pos_list_all: List[dict], start_dt: datetime, end
             amt_usd = _get_cf_usd_ui_first(cf)
             if amt_usd is None:
                 continue
-
             try:
                 amt_usd = float(amt_usd)
             except Exception:
@@ -463,7 +516,6 @@ def sum_prev_n_days(history: List[List[str]], n: int, value_col_idx: int) -> flo
     return sum(_row_val(r, value_col_idx) for r in prev)
 
 def sum_month_to_date(history: List[List[str]], period_end: datetime, value_col_idx: int) -> float:
-    # month start at 1st 09:00 anchor
     m = period_end.astimezone(JST).month
     y = period_end.astimezone(JST).year
     total = 0.0
@@ -499,17 +551,9 @@ def build_daily_investor_message(
     emitted_today: float,
     history: List[List[str]],
 ) -> str:
-    """
-    Investor DAILY:
-      - Effective DEX APR (7d avg, emitted-based) with denominator = CURRENT Net
-      - MTD emitted
-      - ALL-TIME emitted
-      - This week claimed + WoW
-      - Avg claimed per day (this week)
-      - Current Net
-    """
     # indices in log row:
     # D net_total(3), E claimed(4), F unclaimed(5), G emitted(6)
+
     emitted_7d = sum_last_n_days(history, 7, 6)
     avg_emitted_7d = emitted_7d / 7.0 if emitted_7d > 0 else 0.0
     apr_7d = (avg_emitted_7d / net_total) * 365 * 100 if net_total > 0 else 0.0
@@ -517,22 +561,21 @@ def build_daily_investor_message(
     mtd_emitted = sum_month_to_date(history, period_end, 6)
     all_emitted = sum_all_time(history, 6)
 
-    week_claimed = sum_last_n_days(history, 7, 4)
-    prev_week_claimed = sum_prev_n_days(history, 7, 4)
-    wow_pct = None
-    if prev_week_claimed > 0:
-        wow_pct = ((week_claimed - prev_week_claimed) / prev_week_claimed) * 100
-
-    avg_claimed_day = week_claimed / 7.0 if week_claimed > 0 else 0.0
-
-    # ALL-TIME start label = first recorded day (facts only)
-    fst = first_record_dt(history)
-    all_from = fst.strftime("%Y-%m-%d") if fst else "N/A"
+    # ✅ DAILYは「今週発生収益（emitted）」に置換
+    week_emitted = sum_last_n_days(history, 7, 6)
+    prev_week_emitted = sum_prev_n_days(history, 7, 6)
 
     wow_txt = "—"
-    if wow_pct is not None:
-        sign = "+" if wow_pct >= 0 else ""
-        wow_txt = f"{sign}{wow_pct:.1f}%"
+    if prev_week_emitted > 0:
+        wow = ((week_emitted - prev_week_emitted) / prev_week_emitted) * 100
+        sign = "+" if wow >= 0 else ""
+        wow_txt = f"{sign}{wow:.1f}%"
+
+    avg_emitted_day = week_emitted / 7.0 if week_emitted > 0 else 0.0
+
+    # ✅ 開始日は「初回Period End - 1日（Period Start表示）」
+    fst_end = first_record_dt(history)
+    all_from = (fst_end - timedelta(days=1)).strftime("%Y-%m-%d") if fst_end else "N/A"
 
     msg = (
         "CBC Liquidity Mining — Daily\n"
@@ -545,12 +588,12 @@ def build_daily_investor_message(
         f"+{fmt_money(mtd_emitted)}\n\n"
         "🏆 ALL-TIME発生収益\n"
         f"+{fmt_money(all_emitted)}\n"
-        f"（開始: {all_from} / 初回記録日ベース）\n\n"
+        f"（開始: {all_from} / Period Startベース）\n\n"
         "────────────────\n"
-        "🎉 今週確定獲得額\n"
-        f"{fmt_money(week_claimed)}  （前週比 {wow_txt}）\n\n"
-        "📆 1日あたり平均確定額\n"
-        f"{fmt_money(avg_claimed_day)}\n\n"
+        "🎉 今週発生収益（直近7日）\n"
+        f"{fmt_money(week_emitted)}  （前週比 {wow_txt}）\n\n"
+        "📆 1日あたり平均発生額\n"
+        f"{fmt_money(avg_emitted_day)}\n\n"
         "🔒 現在Net運用額\n"
         f"{fmt_money(net_total)}\n"
     )
@@ -562,13 +605,6 @@ def build_weekly_settlement_message(
     net_total: float,
     history: List[List[str]],
 ) -> str:
-    """
-    WEEKLY settlement:
-      - This week claimed (7d)
-      - Previous week claimed + WoW
-      - Avg claimed/day
-      - (optional) show 7d APR as reference
-    """
     week_claimed = sum_last_n_days(history, 7, 4)
     prev_week_claimed = sum_prev_n_days(history, 7, 4)
     avg_claimed_day = week_claimed / 7.0 if week_claimed > 0 else 0.0
@@ -579,7 +615,6 @@ def build_weekly_settlement_message(
         sign = "+" if wow >= 0 else ""
         wow_txt = f"{sign}{wow:.1f}%"
 
-    # reference APR (emitted-based, 7d avg, current net)
     emitted_7d = sum_last_n_days(history, 7, 6)
     avg_emitted_7d = emitted_7d / 7.0 if emitted_7d > 0 else 0.0
     apr_7d = (avg_emitted_7d / net_total) * 365 * 100 if net_total > 0 else 0.0
@@ -613,13 +648,12 @@ def load_config():
 # ================================
 # Core per-safe compute
 # ================================
-def compute_today_metrics(safe_address: str, period_end: datetime) -> Tuple[float, float, float, float, int]:
+def compute_today_metrics(safe_address: str, period_end: datetime) -> Tuple[float, float, float, int]:
     """
     Returns:
       net_total_usd,
       claimed_24h_usd,
       unclaimed_usd (fees_value sum on active positions),
-      emitted_usd (placeholder computed later with yesterday unclaimed),
       tx_count_24h
     """
     start_dt = period_end - timedelta(days=1)
@@ -631,7 +665,6 @@ def compute_today_metrics(safe_address: str, period_end: datetime) -> Tuple[floa
     pos_exited = _normalize_positions(positions_exited)
     pos_all = pos_open + pos_exited
 
-    # Net total from active positions only (current state)
     net_total = 0.0
     unclaimed = 0.0
     for pos in pos_open:
@@ -641,16 +674,11 @@ def compute_today_metrics(safe_address: str, period_end: datetime) -> Tuple[floa
 
     claimed_24h, tx_24h = calc_claimed_usd_in_window(pos_all, start_dt, period_end)
 
-    # emitted computed later after we load yesterday unclaimed from sheets
-    return float(net_total), float(claimed_24h), float(unclaimed), 0.0, int(tx_24h)
+    return float(net_total), float(claimed_24h), float(unclaimed), int(tx_24h)
 
 def get_yesterday_unclaimed_from_history(history: List[List[str]]) -> float:
-    """
-    Uses the most recent previous row's unclaimed_usd.
-    """
     if not history:
         return 0.0
-    # last row is today if already written; we want previous row
     if len(history) >= 2:
         return _row_val(history[-2], 5)
     return 0.0
@@ -670,21 +698,21 @@ def main():
 
     period_end = get_period_end_jst()
 
-    # Sheets init (optional; if missing env, will raise -> handled)
-    sheet_client = None
-    sh = None
-    ws_log = None
+    # Sheets init
     sheets_enabled = True
+    ws_log = None
+    ws_wide = None
     try:
-        sheet_client = get_gsheet_client()
-        sh = open_sheet(sheet_client)
+        client = get_gsheet_client()
+        sh = open_sheet(client)
         ws_log = get_log_ws(sh)
         ensure_log_header(ws_log)
+        ws_wide = get_daily_wide_ws(sh)
     except Exception as e:
         sheets_enabled = False
         print(f"DBG: Sheets disabled (err={e})", flush=True)
 
-    # Read whole log once (reduce quota)
+    # Read whole log once
     all_rows = []
     if sheets_enabled and ws_log:
         all_rows = read_log_rows(ws_log)
@@ -705,16 +733,16 @@ def main():
             # history for this safe
             safe_hist = get_safe_history(all_rows, safe_address)
 
-            net_total, claimed_24h, unclaimed_today, _, tx_24h = compute_today_metrics(safe_address, period_end)
+            net_total, claimed_24h, unclaimed_today, tx_24h = compute_today_metrics(safe_address, period_end)
 
-            # emitted proxy (facts: uses unclaimed USD delta + claimed)
+            # emitted proxy: max(0, Δunclaimed) + claimed
             y_unclaimed = get_yesterday_unclaimed_from_history(safe_hist)
             delta_unclaimed = unclaimed_today - y_unclaimed
             if delta_unclaimed < 0:
                 delta_unclaimed = 0.0
             emitted_today = float(delta_unclaimed) + float(claimed_24h)
 
-            # upsert log (so future runs have data)
+            # ✅ Sheets: DAILY_LOG（縦）更新（集計用）
             if sheets_enabled and ws_log:
                 upsert_daily_log_row(
                     ws_log,
@@ -726,8 +754,7 @@ def main():
                     unclaimed_today,
                     emitted_today,
                 )
-                # refresh safe history in-memory (append today's row locally)
-                # (simple: re-read for correctness if you want; we keep it light)
+                # in-memory append
                 all_rows.append([
                     period_end.strftime("%Y-%m-%d %H:%M"),
                     safe_name,
@@ -739,7 +766,11 @@ def main():
                 ])
                 safe_hist = get_safe_history(all_rows, safe_address)
 
-            # Sunday: WEEKLY only
+            # ✅ Sheets: DAILY_WIDE（横）更新（スクショ形式）
+            if sheets_enabled and ws_wide:
+                append_daily_wide_numbered(ws_wide, period_end, safe_name, safe_address, claimed_24h)
+
+            # Telegram
             if mode == "WEEKLY":
                 msg = build_weekly_settlement_message(
                     safe_address=safe_address,
