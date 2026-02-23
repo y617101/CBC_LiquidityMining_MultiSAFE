@@ -1043,18 +1043,17 @@ def main():
             safe_hist = get_safe_history(all_rows, safe_address)
 
             if mode == "WEEKLY":
-                pos_open, net_total, _by_nft, week_total, prev_week_total, mtd_confirmed, all_confirmed = (
-                    compute_weekly_confirmed_metrics(safe_address, period_end)
+                # 週次は compute_weekly_confirmed_metrics を使う（存在する関数）
+                pos_open, net_total, _by_nft_7d, week_claimed, prev_week_claimed = compute_weekly_confirmed_metrics(
+                    safe_address, period_end
                 )
-
                 msg = build_weekly_message(
                     safe_address=safe_address,
                     period_end=period_end,
                     net_total=net_total,
-                    week_claimed=week_total,
-                    prev_week_claimed=prev_week_total,
-                    mtd_confirmed=mtd_confirmed,
-                    all_confirmed=all_confirmed,
+                    week_claimed=week_claimed,
+                    prev_week_claimed=prev_week_claimed,
+                    history=safe_hist,
                     pos_open=pos_open,
                 )
                 send_telegram(msg, chat_id)
