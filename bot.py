@@ -32,6 +32,7 @@ def _is_claimed_type(cf_type) -> bool:
         "feescollected",
         "claimedfees",
     )
+    is_claimed_type = _is_claimed_type
 
 
 def _get_cf_usd(cf: dict) -> float:
