@@ -506,52 +506,45 @@ def safe_apr_weighted(pos_open: List[dict]) -> float:
     return (weighted / total_net) if total_net > 0 else 0.0
 
 # ================================
-# Fees (USD) helpers (cash_flows)
+# Fees (USD) helpers (claimed/collected)
 # ================================
+def _norm_cf_type(t) -> str:
+    s = _lower(t)
+    s = s.replace("_", "-").replace(" ", "-")
+    return s
+
+def _is_claimed_type(cf_type) -> bool:
+    """
+    Revert cash_flows type variations absorber.
+    We treat both fees-collected and claimed-fees as "confirmed/collected" events.
+    """
+    t = _norm_cf_type(cf_type)
+    return t in (
+        "fees-collected",
+        "claimed-fees",
+        "fee-collected",
+        "feescollected",
+        "claimedfees",
+    )
+
 def _get_cf_usd(cf: dict) -> Optional[float]:
     """
-    cash_flow から USD をできるだけ頑丈に拾う。
-    - 直接 float/int/数値文字列
-    - 1段ネスト(dict)も拾う
+    USD key variations (UI/API).
+    Prefer 'hodl' USD fields if present, then fall back to generic USD fields.
     """
-    if not isinstance(cf, dict):
-        return None
-
-    # まずは「強い候補」を優先
     candidates = [
-        "hodl_value", "hodl_value_usd",
-        "value_usd", "amount_usd",
-        "usd_value", "usd",
-        "valueUsd", "amountUsd", "hodlValueUsd", "hodlValue",
-        "amountUSD", "valueUSD",
+        # UI-ish / hodl
+        "hodl_value", "hodl_value_usd", "hodlValue", "hodlValueUsd",
+        "hodl_usd", "hodlUsd", "hodl_valueUsd", "hodl_valueUSD",
+
+        # common USD fields
+        "usd_value", "usdValue", "value_usd", "valueUsd",
+        "amount_usd", "amountUsd", "amountUSD", "usd",
     ]
     for k in candidates:
-        v = cf.get(k)
-        fv = to_f(v)
-        if fv is not None:
-            return float(fv)
-
-        # 1段ネスト dict を救う（例: usd:{value:...} みたいな形）
-        if isinstance(v, dict):
-            for kk in candidates:
-                fv2 = to_f(v.get(kk))
-                if fv2 is not None:
-                    return float(fv2)
-
-            # dict内の「キー名にusdが含まれる数値」を拾う（最後の保険）
-            for kk, vv in v.items():
-                if "usd" in str(kk).lower():
-                    fv3 = to_f(vv)
-                    if fv3 is not None:
-                        return float(fv3)
-
-    # 最後の保険：cf直下のキーに usd を含む数値を拾う
-    for kk, vv in cf.items():
-        if "usd" in str(kk).lower():
-            fv = to_f(vv)
-            if fv is not None:
-                return float(fv)
-
+        v = to_f(cf.get(k))
+        if v is not None:
+            return float(v)
     return None
 
 def calc_claimed_usd_in_window(pos_list_all: List[dict], start_dt: datetime, end_dt: datetime) -> Tuple[float, int]:
