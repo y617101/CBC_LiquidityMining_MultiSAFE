@@ -808,6 +808,33 @@ def get_yesterday_unclaimed_from_history(history: List[List[str]]) -> float:
         return _row_val(history[-2], 5)
     return 0.0
 
+def compute_weekly_nft_snapshot_metrics(
+    safe_address: str,
+    period_end: datetime,
+) -> Tuple[List[dict], float, Dict[str, float]]:
+    """
+    WEEKLY用：
+      - pos_open（スナップショット）
+      - net_total（openのNet合算）
+      - claimed_7d_by_nft（7日窓の確定USD）
+    """
+    start_dt = period_end - timedelta(days=7)
+
+    positions_open = fetch_positions(safe_address, active=True)
+    positions_exited = fetch_positions(safe_address, active=False)
+
+    pos_open = _normalize_positions(positions_open)
+    pos_exited = _normalize_positions(positions_exited)
+    pos_all = pos_open + pos_exited
+
+    net_total = 0.0
+    for pos in pos_open:
+        net_total += float(to_f(calc_net_usd(pos)) or 0.0)
+
+    claimed_by_nft_7d = calc_claimed_usd_by_nft_in_window(pos_all, start_dt, period_end)
+
+    return pos_open, float(net_total), claimed_by_nft_7d
+
 # ================================
 # main
 # ================================
@@ -862,9 +889,7 @@ def main():
             # WEEKLY
             # ----------------
             if mode == "WEEKLY":
-                pos_open, net_total, claimed_by_nft_7d = compute_weekly_nft_snapshot_metrics(
-                    safe_address, period_end
-                )
+                pos_open, net_total, claimed_by_nft_7d = compute_weekly_nft_snapshot_metrics(safe_address, period_end)
                 nft_lines = build_nft_lines_simple(pos_open, claimed_by_nft_7d, window_days=7)
 
                 msg = build_weekly_message(
