@@ -668,6 +668,7 @@ def calc_claimed_usd_in_window(pos_list_all: List[dict], start_dt: datetime, end
 
         txh = _get_tx_hash(cf)
         usd = _get_cf_usd(cf)
+        print("DBG cf.usd_calc:", usd, flush=True)
         if usd is None or usd <= 0:
             continue
 
