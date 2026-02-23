@@ -37,15 +37,14 @@ def _is_claimed_type(cf_type) -> bool:
 def _get_cf_usd(cf: dict):
     """
     Use ONLY Revert API-provided USD fields.
-    Do NOT fallback to manual WETH×price calculation.
+    No manual fallback calculation.
     """
+
     usd_keys = [
         "usd",
         "amount_usd", "amountUsd", "amountUSD",
         "value_usd", "valueUsd",
         "usd_value", "usdValue",
-        # hodl系は精算用途では使わない（ズレるため）
-        # "hodl_value", "hodl_value_usd", "hodlValue", "hodlValueUsd",
     ]
 
     for k in usd_keys:
@@ -56,7 +55,6 @@ def _get_cf_usd(cf: dict):
             except Exception:
                 pass
 
-    # APIがUSDを持っていない場合は 0 扱い（自前換算しない）
     return 0.0
 
 # ================================
