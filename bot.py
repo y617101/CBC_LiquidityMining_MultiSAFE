@@ -3,8 +3,8 @@ import json
 import html
 import time
 import requests
-from datetime import datetime, timedelta, timezone, date
-from typing import List, Optional, Tuple
+from datetime import datetime, timedelta, timezone
+from typing import Dict, List, Optional, Tuple
 
 import gspread
 from google.oauth2.service_account import Credentials
@@ -20,7 +20,7 @@ REVERT_API = "https://api.revert.finance"
 # ================================
 def build_uniswap_link_base(nft_id: str) -> str:
     return f"https://app.uniswap.org/positions/v3/base/{nft_id}"
-    
+
 def h(x) -> str:
     return html.escape(str(x), quote=True)
 
@@ -66,6 +66,12 @@ def _get_tx_hash(cf: dict) -> str:
 def dbg(*args):
     if (os.getenv("DEBUG") or "").strip() == "1":
         print(*args, flush=True)
+
+def mask_nft(nft_id: str) -> str:
+    s = str(nft_id or "").strip()
+    if len(s) <= 3:
+        return s
+    return s[:3] + "*****"
 
 # ================================
 # Time (JST 09:00 anchor)
@@ -415,7 +421,7 @@ def calc_net_usd(pos) -> Optional[float]:
     return float(pooled) - float(debt)
 
 # ================================
-# Fees - claimed in window (USD)
+# Fees (USD) helpers
 # ================================
 def _get_cf_usd_ui_first(cf: dict) -> Optional[float]:
     candidates = [
@@ -485,6 +491,57 @@ def calc_claimed_usd_in_window(pos_list_all: List[dict], start_dt: datetime, end
 
     return float(total), int(count)
 
+def calc_claimed_usd_by_nft_in_window(pos_list_all: List[dict], start_dt: datetime, end_dt: datetime) -> Dict[str, float]:
+    """
+    24h確定(=fees-collected/claimed-fees)をNFT別にUSD集計
+    open+exited二重計上を避けるため (tx_hash,type,nft_id) で重複排除
+    """
+    out: Dict[str, float] = {}
+    seen = set()  # (txh, type, nft_id)
+
+    for pos in (pos_list_all or []):
+        if not isinstance(pos, dict):
+            continue
+        nft_id = str(pos.get("nft_id") or "UNKNOWN")
+        cfs = pos.get("cash_flows") or []
+        if not isinstance(cfs, list):
+            continue
+
+        for cf in cfs:
+            if not isinstance(cf, dict):
+                continue
+            t = _lower(cf.get("type"))
+            if t not in ("fees-collected", "claimed-fees"):
+                continue
+
+            ts = _to_ts_sec(cf.get("timestamp"))
+            if ts is None:
+                continue
+            ts_dt = datetime.fromtimestamp(ts, JST)
+            if ts_dt < start_dt or ts_dt >= end_dt:
+                continue
+
+            txh = _get_tx_hash(cf)
+            key = (txh, t, nft_id)
+            if txh and key in seen:
+                continue
+            if txh:
+                seen.add(key)
+
+            amt_usd = _get_cf_usd_ui_first(cf)
+            if amt_usd is None:
+                continue
+            try:
+                amt_usd = float(amt_usd)
+            except Exception:
+                continue
+            if amt_usd <= 0:
+                continue
+
+            out[nft_id] = float(out.get(nft_id, 0.0) or 0.0) + amt_usd
+
+    return out
+
 # ================================
 # Metrics derived from Sheets log
 # ================================
@@ -542,72 +599,87 @@ def first_record_dt(history: List[List[str]]) -> Optional[datetime]:
     return None
 
 # ================================
-# Build DAILY / WEEKLY messages
+# NFT block (simple)
 # ================================
-def build_daily_investor_message(
-    safe_name: str,
+def build_nft_lines_simple(pos_open: List[dict], claimed_24h_by_nft: Dict[str, float]) -> List[str]:
+    """
+    📊 NFT Positions
+    463*****（青リンク） | ACTIVE | Net $xx | APR xx%
+    """
+    lines: List[str] = []
+    for pos in (pos_open or []):
+        nft_id = str(pos.get("nft_id") or "UNKNOWN")
+
+        status = "ACTIVE"
+        if pos.get("in_range") is False:
+            status = "OUT OF RANGE"
+
+        net = float(to_f(calc_net_usd(pos), 0.0) or 0.0)
+        unclaimed_usd = float(to_f(pos.get("fees_value"), 0.0) or 0.0)
+        claimed_nft = float(claimed_24h_by_nft.get(nft_id, 0.0) or 0.0)
+
+        apr = 0.0
+        if net > 0:
+            apr = ((unclaimed_usd + claimed_nft) / net) * 365 * 100
+
+        url = build_uniswap_link_base(nft_id)
+        link_html = f'<a href="{h(url)}">{h(mask_nft(nft_id))}</a>'
+
+        lines.append(f"{link_html} | {h(status)} | Net {fmt_money(net)} | APR {fmt_pct(apr)}")
+
+    return lines
+
+# ================================
+# Build DAILY / WEEKLY messages (templates fixed)
+# ================================
+def build_daily_message(
     safe_address: str,
     period_end: datetime,
     net_total: float,
-    claimed_24h: float,
-    unclaimed_today: float,
     emitted_today: float,
     history: List[List[str]],
+    nft_lines: List[str],
 ) -> str:
-    # indices in log row:
-    # D net_total(3), E claimed(4), F unclaimed(5), G emitted(6)
-
+    # emitted-based 7d avg APR (denominator = CURRENT net)
     emitted_7d = sum_last_n_days(history, 7, 6)
     avg_emitted_7d = emitted_7d / 7.0 if emitted_7d > 0 else 0.0
     apr_7d = (avg_emitted_7d / net_total) * 365 * 100 if net_total > 0 else 0.0
 
     mtd_emitted = sum_month_to_date(history, period_end, 6)
-    all_emitted = sum_all_time(history, 6)
 
-    # ✅ DAILYは「今週発生収益（emitted）」に置換
-    week_emitted = sum_last_n_days(history, 7, 6)
-    prev_week_emitted = sum_prev_n_days(history, 7, 6)
-
-    wow_txt = "—"
-    if prev_week_emitted > 0:
-        wow = ((week_emitted - prev_week_emitted) / prev_week_emitted) * 100
-        sign = "+" if wow >= 0 else ""
-        wow_txt = f"{sign}{wow:.1f}%"
-
-    avg_emitted_day = week_emitted / 7.0 if week_emitted > 0 else 0.0
-
-    # ✅ 開始日は「初回Period End - 1日（Period Start表示）」
-    fst_end = first_record_dt(history)
-    all_from = (fst_end - timedelta(days=1)).strftime("%Y-%m-%d") if fst_end else "N/A"
+    avg_emitted_day_7d = avg_emitted_7d  # 表示名だけ
+    # ALL-TIMEはDailyでは省略（要望のテンプレに合わせる）
 
     msg = (
-        "CBC Liquidity Mining — Daily\n"
+        "🚀 CBC Liquidity Mining — Daily\n"
         f"Period End: {period_end.strftime('%Y-%m-%d %H:%M')} JST\n"
         f"SAFE {safe_address}\n"
         "────────────────\n\n"
+        "🗓 今月累計DEX手数料収益\n"
+        f"+{fmt_money(mtd_emitted)}\n\n"
         "📈 実効DEX APR（直近7日平均）\n"
         f"{fmt_pct(apr_7d)}\n\n"
-        "🗓 今月累計発生収益（MTD）\n"
-        f"+{fmt_money(mtd_emitted)}\n\n"
-        "🏆 ALL-TIME発生収益\n"
-        f"+{fmt_money(all_emitted)}\n"
-        f"（開始: {all_from} / Period Startベース）\n\n"
-        "────────────────\n"
-        "🎉 今週発生収益（直近7日）\n"
-        f"{fmt_money(week_emitted)}  （前週比 {wow_txt}）\n\n"
-        "📆 1日あたり平均発生額\n"
-        f"{fmt_money(avg_emitted_day)}\n\n"
         "🔒 現在Net運用額\n"
-        f"{fmt_money(net_total)}\n"
+        f"{fmt_money(net_total)}\n\n"
+        "────────────────\n"
+        "🎉 当日DEX手数料収益\n"
+        f"{fmt_money(emitted_today)}\n\n"
+        "📆 1日あたりDEX手数料収益（直近7日平均）\n"
+        f"{fmt_money(avg_emitted_day_7d)}\n\n"
+        "📊 NFT Positions\n"
+        + ("\n".join(nft_lines) if nft_lines else "—")
+        + "\n"
     )
     return msg
 
-def build_weekly_settlement_message(
+def build_weekly_message(
     safe_address: str,
     period_end: datetime,
     net_total: float,
     history: List[List[str]],
+    nft_lines: List[str],
 ) -> str:
+    # claimed (settlement)
     week_claimed = sum_last_n_days(history, 7, 4)
     prev_week_claimed = sum_prev_n_days(history, 7, 4)
     avg_claimed_day = week_claimed / 7.0 if week_claimed > 0 else 0.0
@@ -618,25 +690,37 @@ def build_weekly_settlement_message(
         sign = "+" if wow >= 0 else ""
         wow_txt = f"{sign}{wow:.1f}%"
 
+    # emitted stats
     emitted_7d = sum_last_n_days(history, 7, 6)
     avg_emitted_7d = emitted_7d / 7.0 if emitted_7d > 0 else 0.0
     apr_7d = (avg_emitted_7d / net_total) * 365 * 100 if net_total > 0 else 0.0
 
+    mtd_emitted = sum_month_to_date(history, period_end, 6)
+    all_emitted = sum_all_time(history, 6)
+
     msg = (
-        "CBC Liquidity Mining — Weekly Settlement\n"
+        "🚀 CBC Liquidity Mining — Weekly Settlement\n"
         f"Period End: {period_end.strftime('%Y-%m-%d %H:%M')} JST\n"
         f"SAFE {safe_address}\n"
         "────────────────\n\n"
-        "🎉 今週確定獲得額\n"
+        "🎉 今週確定収益\n"
         f"{fmt_money(week_claimed)}\n"
         f"（前週 {fmt_money(prev_week_claimed)} ／ {wow_txt}）\n\n"
-        "📆 1日あたり平均確定額（今週）\n"
+        "📆 1日あたり平均確定収益\n"
         f"{fmt_money(avg_claimed_day)}\n\n"
+        "🔒 現在Net運用額\n"
+        f"{fmt_money(net_total)}\n\n"
         "────────────────\n"
         "📈 実効DEX APR（直近7日平均）\n"
         f"{fmt_pct(apr_7d)}\n\n"
-        "🔒 現在Net運用額\n"
-        f"{fmt_money(net_total)}\n"
+        "🗓 今月累計DEX手数料収益\n"
+        f"+{fmt_money(mtd_emitted)}\n\n"
+        "🏆 ALL-TIME DEX手数料収益\n"
+        f"+{fmt_money(all_emitted)}\n\n"
+        "────────────────\n"
+        "📊 NFT Positions\n"
+        + ("\n".join(nft_lines) if nft_lines else "—")
+        + "\n"
     )
     return msg
 
@@ -651,13 +735,19 @@ def load_config():
 # ================================
 # Core per-safe compute
 # ================================
-def compute_today_metrics(safe_address: str, period_end: datetime) -> Tuple[float, float, float, int]:
+def compute_today_metrics(
+    safe_address: str,
+    period_end: datetime,
+) -> Tuple[List[dict], List[dict], float, float, float, int, Dict[str, float]]:
     """
     Returns:
+      pos_open,
+      pos_all,
       net_total_usd,
       claimed_24h_usd,
-      unclaimed_usd (fees_value sum on active positions),
-      tx_count_24h
+      unclaimed_usd,
+      tx_count_24h,
+      claimed_24h_by_nft (USD)
     """
     start_dt = period_end - timedelta(days=1)
 
@@ -676,8 +766,9 @@ def compute_today_metrics(safe_address: str, period_end: datetime) -> Tuple[floa
         unclaimed += float(to_f(pos.get("fees_value"), 0.0) or 0.0)
 
     claimed_24h, tx_24h = calc_claimed_usd_in_window(pos_all, start_dt, period_end)
+    claimed_by_nft = calc_claimed_usd_by_nft_in_window(pos_all, start_dt, period_end)
 
-    return float(net_total), float(claimed_24h), float(unclaimed), int(tx_24h)
+    return pos_open, pos_all, float(net_total), float(claimed_24h), float(unclaimed), int(tx_24h), claimed_by_nft
 
 def get_yesterday_unclaimed_from_history(history: List[List[str]]) -> float:
     if not history:
@@ -716,7 +807,7 @@ def main():
         print(f"DBG: Sheets disabled (err={e})", flush=True)
 
     # Read whole log once
-    all_rows = []
+    all_rows: List[List[str]] = []
     if sheets_enabled and ws_log:
         all_rows = read_log_rows(ws_log)
 
@@ -733,10 +824,12 @@ def main():
             continue
 
         try:
-            # history for this safe
+            # history for this safe (BEFORE write)
             safe_hist = get_safe_history(all_rows, safe_address)
 
-            net_total, claimed_24h, unclaimed_today, tx_24h = compute_today_metrics(safe_address, period_end)
+            pos_open, _pos_all, net_total, claimed_24h, unclaimed_today, _tx_24h, claimed_by_nft = compute_today_metrics(
+                safe_address, period_end
+            )
 
             # emitted proxy: max(0, Δunclaimed) + claimed
             y_unclaimed = get_yesterday_unclaimed_from_history(safe_hist)
@@ -745,7 +838,7 @@ def main():
                 delta_unclaimed = 0.0
             emitted_today = float(delta_unclaimed) + float(claimed_24h)
 
-            # ✅ Sheets: DAILY_LOG（縦）更新（集計用）
+            # ✅ Sheets: DAILY_LOG（縦）
             if sheets_enabled and ws_log:
                 upsert_daily_log_row(
                     ws_log,
@@ -769,29 +862,31 @@ def main():
                 ])
                 safe_hist = get_safe_history(all_rows, safe_address)
 
-            # ✅ Sheets: DAILY_WIDE（横）更新（スクショ形式）
+            # ✅ Sheets: DAILY_WIDE（横）… claimed_24h を格納（既存仕様）
             if sheets_enabled and ws_wide:
                 append_daily_wide_numbered(ws_wide, period_end, safe_name, safe_address, claimed_24h)
 
+            # NFT lines (simple, linked, base)
+            nft_lines = build_nft_lines_simple(pos_open, claimed_by_nft)
+
             # Telegram
             if mode == "WEEKLY":
-                msg = build_weekly_settlement_message(
+                msg = build_weekly_message(
                     safe_address=safe_address,
                     period_end=period_end,
                     net_total=net_total,
                     history=safe_hist,
+                    nft_lines=nft_lines,
                 )
                 send_telegram(msg, chat_id)
             else:
-                msg = build_daily_investor_message(
-                    safe_name=safe_name,
+                msg = build_daily_message(
                     safe_address=safe_address,
                     period_end=period_end,
                     net_total=net_total,
-                    claimed_24h=claimed_24h,
-                    unclaimed_today=unclaimed_today,
                     emitted_today=emitted_today,
                     history=safe_hist,
+                    nft_lines=nft_lines,
                 )
                 send_telegram(msg, chat_id)
 
