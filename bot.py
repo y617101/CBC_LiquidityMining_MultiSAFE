@@ -32,7 +32,7 @@ def _is_claimed_type(cf_type) -> bool:
         "feescollected",
         "claimedfees",
     )
-    is_claimed_type = _is_claimed_type
+
 def is_claimed_type(cf_type) -> bool:
     return _is_claimed_type(cf_type)
 
