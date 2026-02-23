@@ -40,9 +40,15 @@ def _get_cf_usd(cf: dict):
     Fallback to rough calc using collected token amounts + price (debug only).
     """
     usd_keys = [
-        "hodl_value", "hodl_value_usd", "hodlValue", "hodlValueUsd",
-        "usd_value", "usdValue", "value_usd", "valueUsd",
-        "amount_usd", "amountUsd", "amountUSD", "usd",
+    # まず「イベント確定USD」を優先
+    "usd",
+    "amount_usd","amountUsd","amountUSD",
+    "value_usd","valueUsd",
+    "usd_value","usdValue",
+
+    # hodl系は最後（精算用途では原則使わない）
+    "hodl_value","hodl_value_usd","hodlValue","hodlValueUsd",
+]
     ]
     for k in usd_keys:
         v = cf.get(k)
