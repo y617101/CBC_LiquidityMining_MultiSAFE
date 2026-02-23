@@ -1051,28 +1051,28 @@ def compute_weekly_confirmed_metrics(
     prev_week_total = float(sum((confirmed_by_nft_prev or {}).values()))
 
     # --- MTD / ALL confirmed (period_end基準で統一) ---
-month_start = datetime(
-    period_end.astimezone(JST).year,
-    period_end.astimezone(JST).month,
-    1, 0, 0,
-    tzinfo=JST
-)
+    month_start = datetime(
+        period_end.astimezone(JST).year,
+        period_end.astimezone(JST).month,
+        1, 0, 0,
+        tzinfo=JST
+    )
 
-# pos_all から cash_flows を集める
-cash_flows_all = []
-for pos in (pos_all or []):
-    cfs = (pos.get("cash_flows") or [])
-    if isinstance(cfs, list):
-        cash_flows_all.extend(cfs)
+    # pos_all から cash_flows を集める
+    cash_flows_all = []
+    for pos in (pos_all or []):
+        cfs = pos.get("cash_flows") or []
+        if isinstance(cfs, list):
+            cash_flows_all.extend(cfs)
 
-# MTD: [month_start, period_end)
-mtd_rows = pick_confirmed_cf(cash_flows_all, month_start, period_end)
-mtd_confirmed = float(sum(x["usd"] for x in mtd_rows))
+    # --- MTD ---
+    mtd_rows = pick_confirmed_cf(cash_flows_all, month_start, period_end)
+    mtd_confirmed = float(sum(x["usd"] for x in mtd_rows))
 
-# ALL: [かなり昔, period_end) ※period_endで止める
-all_start = datetime(2020, 1, 1, tzinfo=JST)
-all_rows = pick_confirmed_cf(cash_flows_all, all_start, period_end)
-all_confirmed = float(sum(x["usd"] for x in all_rows))
+    # --- ALL ---
+    all_start = datetime(2020, 1, 1, tzinfo=JST)
+    all_rows = pick_confirmed_cf(cash_flows_all, all_start, period_end)
+    all_confirmed = float(sum(x["usd"] for x in all_rows))
 
     dbg("DBG weekly confirmed this/prev:", week_total, prev_week_total)
     dbg("DBG weekly mtd/all:", mtd_confirmed, all_confirmed)
@@ -1086,7 +1086,6 @@ all_confirmed = float(sum(x["usd"] for x in all_rows))
         float(mtd_confirmed),
         float(all_confirmed),
     )
-
 # ================================
 # main
 # ================================
