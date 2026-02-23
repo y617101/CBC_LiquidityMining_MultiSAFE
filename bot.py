@@ -48,8 +48,8 @@ def _get_cf_usd(cf: dict):
 
     # hodl系は最後（精算用途では原則使わない）
     "hodl_value","hodl_value_usd","hodlValue","hodlValueUsd",
-]
     ]
+    
     for k in usd_keys:
         v = cf.get(k)
         if v not in (None, ""):
