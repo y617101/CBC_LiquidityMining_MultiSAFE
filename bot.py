@@ -653,12 +653,9 @@ def build_daily_message(
 
     safe_link = fmt_safe_link(safe_address)
 
-    msg = 
-    (
+    msg = (
         "🚀 CBC Liquidity Mining — Daily\n"
         f"Period End: {period_end.strftime('%Y-%m-%d %H:%M')} JST\n"
-        safe_link = fmt_safe_link(safe_address)  # 0xB1A76*****89734 の青リンク
-        ...
         f"SAFE {safe_link}\n"
         "────────────────\n\n"
         "🗓 今月累計DEX手数料収益\n"
@@ -705,12 +702,10 @@ def build_weekly_message(
 
     safe_link = fmt_safe_link(safe_address)
 
-    msg = 
-(
+    msg = (
         "🚀 CBC Liquidity Mining — Weekly Settlement\n"
         f"Period End: {period_end.strftime('%Y-%m-%d %H:%M')} JST\n"
-        safe_link = fmt_safe_link(safe_address)  # 0xB1A76*****89734 の青リンク
-        ...
+        f"SAFE {safe_link}\n"
         "────────────────\n\n"
         "🎉 今週確定収益\n"
         f"{fmt_money(week_claimed)}\n"
@@ -732,7 +727,6 @@ def build_weekly_message(
         + "\n"
     )
     return msg
-
 # ================================
 # config
 # ================================
