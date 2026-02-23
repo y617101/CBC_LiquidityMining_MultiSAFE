@@ -865,13 +865,6 @@ def compute_weekly_confirmed_totals(
     safe_address: str,
     period_end: datetime,
 ) -> Tuple[List[dict], float, float, float]:
-    """
-    WEEKLY用（API直参照）：
-      - pos_open（snapshot）
-      - net_total（open net）
-      - week_claimed_total（今週7日窓）
-      - prev_week_claimed_total（前週7日窓）
-    """
     start_this = period_end - timedelta(days=7)
     end_this = period_end
     start_prev = period_end - timedelta(days=14)
@@ -883,6 +876,10 @@ def compute_weekly_confirmed_totals(
     pos_open = _normalize_positions(resp_open)
     pos_exited = _normalize_positions(resp_exited)
     pos_all = pos_open + pos_exited
+
+    dbg("DBG weekly normalize open/exited lens:", len(pos_open), len(pos_exited))
+    if len(pos_all) == 0:
+        dbg("DBG weekly pos_all empty. open raw (first 800):", str(resp_open)[:800])
 
     net_total = 0.0
     for pos in pos_open:
