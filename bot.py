@@ -37,17 +37,18 @@ def _is_claimed_type(cf_type) -> bool:
 def _get_cf_usd(cf: dict) -> float:
     """
     Revert Positions API cash_flows:
-    - Often has no direct USD field.
-    - Use collected fees + prices.token0.usd / prices.token1.usd to compute USD.
+    - direct USD keys may be absent
+    - compute USD from collected fees + prices.token0.usd / prices.token1.usd
     """
 
-    # 1) もし直接USDがあるなら最優先で使う（将来の互換）
+    # direct USD fields (if present)
     for k in (
         "usd",
         "amount_usd", "amountUsd", "amountUSD",
         "value_usd", "valueUsd",
         "usd_value", "usdValue",
         "hodl_value_usd", "hodlValueUsd",
+        "hodl_value", "hodlValue",
     ):
         v = cf.get(k)
         if v not in (None, ""):
@@ -56,13 +57,13 @@ def _get_cf_usd(cf: dict) -> float:
             except Exception:
                 pass
 
-    # 2) Revertのprices構造からUSD換算
     prices = cf.get("prices") or {}
     if not isinstance(prices, dict):
         prices = {}
 
     p0 = prices.get("token0") or {}
     p1 = prices.get("token1") or {}
+
     try:
         usd0 = float((p0 or {}).get("usd") or 0.0)
     except Exception:
@@ -72,7 +73,6 @@ def _get_cf_usd(cf: dict) -> float:
     except Exception:
         usd1 = 0.0
 
-    # collected amounts
     def _to_float(x):
         try:
             return float(x)
@@ -84,7 +84,6 @@ def _get_cf_usd(cf: dict) -> float:
 
     usd = amt0 * usd0 + amt1 * usd1
     return float(usd)
-
 # ================================
 # Constants
 # ================================
