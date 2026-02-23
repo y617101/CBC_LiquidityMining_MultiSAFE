@@ -729,7 +729,7 @@ def calc_confirmed_all_time(pos_list_all: List[dict]) -> float:
         if usd is None or usd <= 0:
             continue
         txh = _get_tx_hash(cf)
-        key = (txh, _norm_cf_type(cf.get("type")), nft_id)
+        key = (txh, _norm_cf_type(cf.get("type")), nft_id, int(ts), round(float(usd), 6))
         if key in seen:
             continue
         seen.add(key)
