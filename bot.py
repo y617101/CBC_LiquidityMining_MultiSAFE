@@ -501,18 +501,17 @@ def calc_claimed_usd_in_window(pos_list_all: List[dict], start_dt: datetime, end
 
     return float(total), int(count)
 
-def calc_claimed_usd_by_nft_in_window(pos_list_all: List[dict], start_dt: datetime, end_dt: datetime) -> Dict[str, float]:
-    """
-    24h確定(=fees-collected/claimed-fees)をNFT別にUSD集計
-    open+exited二重計上を避けるため (tx_hash,type,nft_id) で重複排除
-    """
-    out: Dict[str, float] = {}
-    seen = set()  # (txh, type, nft_id)
+def calc_claimed_usd_in_window(pos_list_all: List[dict], start_dt: datetime, end_dt: datetime) -> Tuple[float, int]:
+    total = 0.0
+    count = 0
+    seen = set()  # (tx_hash, type, nft_id)
 
     for pos in (pos_list_all or []):
         if not isinstance(pos, dict):
             continue
+
         nft_id = str(pos.get("nft_id") or "UNKNOWN")
+
         cfs = pos.get("cash_flows") or []
         if not isinstance(cfs, list):
             continue
@@ -520,6 +519,7 @@ def calc_claimed_usd_by_nft_in_window(pos_list_all: List[dict], start_dt: dateti
         for cf in cfs:
             if not isinstance(cf, dict):
                 continue
+
             t = _lower(cf.get("type"))
             if t not in ("fees-collected", "claimed-fees"):
                 continue
@@ -527,6 +527,7 @@ def calc_claimed_usd_by_nft_in_window(pos_list_all: List[dict], start_dt: dateti
             ts = _to_ts_sec(cf.get("timestamp"))
             if ts is None:
                 continue
+
             ts_dt = datetime.fromtimestamp(ts, JST)
             if ts_dt < start_dt or ts_dt >= end_dt:
                 continue
@@ -541,17 +542,19 @@ def calc_claimed_usd_by_nft_in_window(pos_list_all: List[dict], start_dt: dateti
             amt_usd = _get_cf_usd_ui_first(cf)
             if amt_usd is None:
                 continue
+
             try:
                 amt_usd = float(amt_usd)
             except Exception:
                 continue
+
             if amt_usd <= 0:
                 continue
 
-            out[nft_id] = float(out.get(nft_id, 0.0) or 0.0) + amt_usd
+            total += amt_usd
+            count += 1
 
-    return out
-
+    return float(total), int(count)
 # ================================
 # Metrics derived from Sheets log
 # ================================
