@@ -617,32 +617,26 @@ def first_record_dt(history: List[List[str]]) -> Optional[datetime]:
 # ================================
 # NFT block (simple)
 # ================================
-def build_nft_lines_simple(pos_open: List[dict], claimed_24h_by_nft: Dict[str, float]) -> List[str]:
-    """
-    📊 NFT Positions
-    463*****（青リンク） | ACTIVE | Net $xx | APR xx%
-    """
-    lines: List[str] = []
+def build_nft_lines_simple(pos_open: List[dict]) -> List[str]:
+    lines = []
     for pos in (pos_open or []):
-        nft_id = str(pos.get("nft_id") or "UNKNOWN")
+        nft_id = str(pos.get("nft_id") or "").strip()
+        if not nft_id:
+            continue
 
-        status = "ACTIVE"
-        if pos.get("in_range") is False:
-            status = "OUT OF RANGE"
+        status = "OUT OF RANGE" if pos.get("in_range") is False else "ACTIVE"
+        net = float(calc_net_usd(pos) or 0.0)
 
-        net = float(to_f(calc_net_usd(pos), 0.0) or 0.0)
-        unclaimed_usd = float(to_f(pos.get("fees_value"), 0.0) or 0.0)
-        claimed_nft = float(claimed_24h_by_nft.get(nft_id, 0.0) or 0.0)
-
-        apr = 0.0
-        if net > 0:
-            apr = ((unclaimed_usd + claimed_nft) / net) * 365 * 100
+        # APRは今の計算に合わせて（必要なら差し替え）
+        fees_value = float(to_f(pos.get("fees_value"), 0.0) or 0.0)
+        apr = (fees_value / net) * 365 * 100 if net > 0 else 0.0
 
         url = build_uniswap_link_base(nft_id)
-        link_html = f'<a href="{h(url)}">{h(mask_nft(nft_id))}</a>'
+        nft_link = f'<a href="{h(url)}">{h(nft_id)}</a>'  # ★フルID＋青リンク
 
-        lines.append(f"{link_html} | {h(status)} | Net {fmt_money(net)} | APR {fmt_pct(apr)}")
-
+        lines.append(
+            f"{nft_link} | {h(status)} | Net {fmt_money(net)} | APR {fmt_pct(apr)}"
+        )
     return lines
 
 # ================================
@@ -668,6 +662,8 @@ def build_daily_message(
     msg = (
         "🚀 CBC Liquidity Mining — Daily\n"
         f"Period End: {period_end.strftime('%Y-%m-%d %H:%M')} JST\n"
+        safe_link = fmt_safe_link(safe_address)  # 0xB1A76*****89734 の青リンク
+        ...
         f"SAFE {safe_link}\n"
         "────────────────\n\n"
         "🗓 今月累計DEX手数料収益\n"
@@ -717,7 +713,8 @@ def build_weekly_message(
     msg = (
         "🚀 CBC Liquidity Mining — Weekly Settlement\n"
         f"Period End: {period_end.strftime('%Y-%m-%d %H:%M')} JST\n"
-        f"SAFE {safe_link}\n"
+        safe_link = fmt_safe_link(safe_address)  # 0xB1A76*****89734 の青リンク
+        ...
         "────────────────\n\n"
         "🎉 今週確定収益\n"
         f"{fmt_money(week_claimed)}\n"
