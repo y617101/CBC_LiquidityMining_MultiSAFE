@@ -18,6 +18,9 @@ REVERT_API = "https://api.revert.finance"
 # ================================
 # Small helpers
 # ================================
+def build_uniswap_link_base(nft_id: str) -> str:
+    return f"https://app.uniswap.org/positions/v3/base/{nft_id}"
+    
 def h(x) -> str:
     return html.escape(str(x), quote=True)
 
