@@ -83,12 +83,6 @@ def dbg(*args):
     if (os.getenv("DEBUG") or "").strip() == "1":
         print(*args, flush=True)
 
-def mask_nft(nft_id: str) -> str:
-    s = str(nft_id or "").strip()
-    if len(s) <= 3:
-        return s
-    return s[:3] + "*****"
-
 # ================================
 # Time (JST 09:00 anchor)
 # ================================
