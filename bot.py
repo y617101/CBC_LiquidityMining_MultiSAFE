@@ -9,6 +9,38 @@ from typing import Dict, List, Optional, Tuple
 
 import gspread
 from google.oauth2.service_account import Credentials
+# ================================
+# Cash flow helpers
+# ================================
+def _norm_cf_type(t) -> str:
+    s = str(t or "").strip().lower()
+    s = s.replace("_", "-").replace(" ", "-")
+    return s
+
+def _is_claimed_type(cf_type) -> bool:
+    t = _norm_cf_type(cf_type)
+    return t in (
+        "fees-collected",
+        "claimed-fees",
+        "fee-collected",
+        "feescollected",
+        "claimedfees",
+    )
+
+def _get_cf_usd(cf: dict):
+    keys = [
+        "hodl_value", "hodl_value_usd", "hodlValue", "hodlValueUsd",
+        "usd_value", "usdValue", "value_usd", "valueUsd",
+        "amount_usd", "amountUsd", "amountUSD", "usd",
+    ]
+    for k in keys:
+        v = cf.get(k)
+        if v is not None:
+            try:
+                return float(v)
+            except:
+                pass
+    return None
 
 # ================================
 # Constants
@@ -504,48 +536,6 @@ def safe_apr_weighted(pos_open: List[dict]) -> float:
         total_net += net
         weighted += apr * net
     return (weighted / total_net) if total_net > 0 else 0.0
-
-# ================================
-# Fees (USD) helpers (claimed/collected)
-# ================================
-def _norm_cf_type(t) -> str:
-    s = _lower(t)
-    s = s.replace("_", "-").replace(" ", "-")
-    return s
-
-def _is_claimed_type(cf_type) -> bool:
-    """
-    Revert cash_flows type variations absorber.
-    We treat both fees-collected and claimed-fees as "confirmed/collected" events.
-    """
-    t = _norm_cf_type(cf_type)
-    return t in (
-        "fees-collected",
-        "claimed-fees",
-        "fee-collected",
-        "feescollected",
-        "claimedfees",
-    )
-
-def _get_cf_usd(cf: dict) -> Optional[float]:
-    """
-    USD key variations (UI/API).
-    Prefer 'hodl' USD fields if present, then fall back to generic USD fields.
-    """
-    candidates = [
-        # UI-ish / hodl
-        "hodl_value", "hodl_value_usd", "hodlValue", "hodlValueUsd",
-        "hodl_usd", "hodlUsd", "hodl_valueUsd", "hodl_valueUSD",
-
-        # common USD fields
-        "usd_value", "usdValue", "value_usd", "valueUsd",
-        "amount_usd", "amountUsd", "amountUSD", "usd",
-    ]
-    for k in candidates:
-        v = to_f(cf.get(k))
-        if v is not None:
-            return float(v)
-    return None
 
 def calc_claimed_usd_in_window(pos_list_all: List[dict], start_dt: datetime, end_dt: datetime) -> Tuple[float, int]:
     total = 0.0
