@@ -1077,7 +1077,15 @@ all_confirmed = float(sum(x["usd"] for x in all_rows))
     dbg("DBG weekly confirmed this/prev:", week_total, prev_week_total)
     dbg("DBG weekly mtd/all:", mtd_confirmed, all_confirmed)
 
-return pos_open, float(net_total), confirmed_by_nft_7d, week_total, prev_week_total, float(mtd_confirmed), float(all_confirmed)
+    return (
+        pos_open,
+        float(net_total),
+        confirmed_by_nft_7d,
+        week_total,
+        prev_week_total,
+        float(mtd_confirmed),
+        float(all_confirmed),
+    )
 
 # ================================
 # main
