@@ -632,6 +632,13 @@ def calc_claimed_usd_in_window(pos_list_all: List[dict], start_dt: datetime, end
         if ts_dt < start_dt or ts_dt >= end_dt:
             continue
 
+        if os.getenv("DBG_CF_KEYS", "0") == "1":
+            print("DBG CF type:", cf.get("type"), flush=True)
+            print("DBG CF keys:", list(cf.keys()), flush=True)
+            print("DBG CF sample:", str(cf)[:800], flush=True)
+            # 1回だけ出して止める
+            os.environ["DBG_CF_KEYS"] = "0"
+
         txh = _get_tx_hash(cf)
         usd = _get_cf_usd(cf)
         if usd is None or usd <= 0:
