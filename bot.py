@@ -874,15 +874,10 @@ def compute_today_metrics(
 
     return pos_open, pos_all, float(net_total), float(claimed_24h), float(unclaimed)
 
-
-def compute_weekly_confirmed_totals(
+def compute_weekly_confirmed_metrics(
     safe_address: str,
     period_end: datetime,
-) -> Tuple[List[dict], float, float, float]:
-    """
-    Returns:
-      pos_open, net_total_usd, week_claimed_total, prev_week_claimed_total
-    """
+) -> Tuple[List[dict], float, Dict[str, float], float, float]:
     start_this = period_end - timedelta(days=7)
     end_this = period_end
     start_prev = period_end - timedelta(days=14)
@@ -895,22 +890,20 @@ def compute_weekly_confirmed_totals(
     pos_exited = _normalize_positions(resp_exited)
     pos_all = pos_open + pos_exited
 
-    dbg("DBG weekly normalize open/exited lens:", len(pos_open), len(pos_exited))
-    if len(pos_all) == 0:
-        dbg("DBG weekly pos_all empty. open raw (first 800):", str(resp_open)[:800])
-        dbg("DBG weekly pos_all empty. exited raw (first 800):", str(resp_exited)[:800])
-
     net_total = 0.0
-    for pos in (pos_open or []):
-        net = calc_net_usd(pos)
-        net_total += float(net) if net is not None else 0.0
+    for pos in pos_open:
+        net_total += float(to_f(calc_net_usd(pos), 0.0) or 0.0)
 
-    week_claimed, _ = calc_claimed_usd_in_window(pos_all, start_this, end_this)
-    prev_week_claimed, _ = calc_claimed_usd_in_window(pos_all, start_prev, end_prev)
+    # ★ ここだけで集計（スキャン1回）
+    claimed_by_nft_7d = calc_claimed_usd_by_nft_in_window(pos_all, start_this, end_this)
+    claimed_by_nft_prev = calc_claimed_usd_by_nft_in_window(pos_all, start_prev, end_prev)
 
-    dbg("DBG weekly claimed this/prev:", week_claimed, prev_week_claimed)
+    week_claimed_total = float(sum((claimed_by_nft_7d or {}).values()))
+    prev_week_claimed_total = float(sum((claimed_by_nft_prev or {}).values()))
 
-    return pos_open, float(net_total), float(week_claimed), float(prev_week_claimed)
+    dbg("DBG weekly claimed this/prev:", week_claimed_total, prev_week_claimed_total)
+
+    return pos_open, float(net_total), claimed_by_nft_7d, week_claimed_total, prev_week_claimed_total
 
 # ================================
 # main
