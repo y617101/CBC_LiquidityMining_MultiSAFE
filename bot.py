@@ -371,8 +371,23 @@ def fetch_positions(safe: str, active: bool = True):
     url = f"{REVERT_API}/v1/positions/uniswapv3/account/{safe}"
     params = {"active": "true" if active else "false", "with-v4": "true"}
     r = requests.get(url, params=params, timeout=30)
+    dbg("DBG fetch_positions", "active=", active, "status=", r.status_code, "url=", r.url)
+
+    # 失敗時は本文も出す
+    if r.status_code != 200:
+        dbg("DBG body:", r.text[:800])
     r.raise_for_status()
-    return r.json()
+
+    js = r.json()
+    # 形状チェック（超重要）
+    if isinstance(js, dict):
+        dbg("DBG resp keys:", list(js.keys())[:30])
+        for k in ("positions", "data", "result"):
+            v = js.get(k)
+            dbg(f"DBG key {k} type:", type(v).__name__, "len=", (len(v) if isinstance(v, list) else "n/a"))
+    else:
+        dbg("DBG resp type:", type(js).__name__, "len=", (len(js) if isinstance(js, list) else "n/a"))
+    return js
 
 def _normalize_positions(resp) -> List[dict]:
     # list返し
@@ -808,6 +823,10 @@ def compute_today_metrics(
     claimed_24h, _tx_24h = calc_claimed_usd_in_window(pos_all, start_dt, period_end)
 
     return pos_open, pos_all, float(net_total), float(claimed_24h), float(unclaimed)
+    
+dbg("DBG normalize open/exited lens:", len(pos_open), len(pos_exited))
+if len(pos_open) == 0:
+    dbg("DBG open raw (first 800):", str(positions_open)[:800])
 
 def compute_weekly_confirmed_totals(
     safe_address: str,
