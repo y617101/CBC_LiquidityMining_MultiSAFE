@@ -29,16 +29,16 @@ def mask_safe_addr(addr: str) -> str:
         return a
     return f"{a[:2+5]}*****{a[-4:]}"  # 例: 0xB1A76*****89734
 
+def h(x) -> str:
+    return html.escape(str(x), quote=True)
+
 def fmt_safe_link(addr: str) -> str:
     url = build_basescan_addr_link(addr)
     label = mask_safe_addr(addr)
     return f'<a href="{h(url)}">{h(label)}</a>'
-    
+
 def build_uniswap_link_base(nft_id: str) -> str:
     return f"https://app.uniswap.org/positions/v3/base/{nft_id}"
-
-def h(x) -> str:
-    return html.escape(str(x), quote=True)
 
 def to_f(x, default=None):
     try:
@@ -456,60 +456,11 @@ def _get_cf_usd_ui_first(cf: dict) -> Optional[float]:
 def calc_claimed_usd_in_window(pos_list_all: List[dict], start_dt: datetime, end_dt: datetime) -> Tuple[float, int]:
     total = 0.0
     count = 0
-    seen = set()  # (tx_hash, type)
-
-    for pos in (pos_list_all or []):
-        if not isinstance(pos, dict):
-            continue
-        cfs = pos.get("cash_flows") or []
-        if not isinstance(cfs, list):
-            continue
-
-        for cf in cfs:
-            if not isinstance(cf, dict):
-                continue
-            t = _lower(cf.get("type"))
-            if t not in ("fees-collected", "claimed-fees"):
-                continue
-
-            ts = _to_ts_sec(cf.get("timestamp"))
-            if ts is None:
-                continue
-            ts_dt = datetime.fromtimestamp(ts, JST)
-            if ts_dt < start_dt or ts_dt >= end_dt:
-                continue
-
-            txh = _get_tx_hash(cf)
-            key = (txh, t)
-            if txh and key in seen:
-                continue
-            if txh:
-                seen.add(key)
-
-            amt_usd = _get_cf_usd_ui_first(cf)
-            if amt_usd is None:
-                continue
-            try:
-                amt_usd = float(amt_usd)
-            except Exception:
-                continue
-            if amt_usd <= 0:
-                continue
-
-            total += amt_usd
-            count += 1
-
-    return float(total), int(count)
-
-def calc_claimed_usd_in_window(pos_list_all: List[dict], start_dt: datetime, end_dt: datetime) -> Tuple[float, int]:
-    total = 0.0
-    count = 0
     seen = set()  # (tx_hash, type, nft_id)
 
     for pos in (pos_list_all or []):
         if not isinstance(pos, dict):
             continue
-
         nft_id = str(pos.get("nft_id") or "UNKNOWN")
 
         cfs = pos.get("cash_flows") or []
@@ -519,7 +470,6 @@ def calc_claimed_usd_in_window(pos_list_all: List[dict], start_dt: datetime, end
         for cf in cfs:
             if not isinstance(cf, dict):
                 continue
-
             t = _lower(cf.get("type"))
             if t not in ("fees-collected", "claimed-fees"):
                 continue
@@ -527,7 +477,6 @@ def calc_claimed_usd_in_window(pos_list_all: List[dict], start_dt: datetime, end
             ts = _to_ts_sec(cf.get("timestamp"))
             if ts is None:
                 continue
-
             ts_dt = datetime.fromtimestamp(ts, JST)
             if ts_dt < start_dt or ts_dt >= end_dt:
                 continue
@@ -542,12 +491,10 @@ def calc_claimed_usd_in_window(pos_list_all: List[dict], start_dt: datetime, end
             amt_usd = _get_cf_usd_ui_first(cf)
             if amt_usd is None:
                 continue
-
             try:
                 amt_usd = float(amt_usd)
             except Exception:
                 continue
-
             if amt_usd <= 0:
                 continue
 
@@ -555,6 +502,55 @@ def calc_claimed_usd_in_window(pos_list_all: List[dict], start_dt: datetime, end
             count += 1
 
     return float(total), int(count)
+
+def calc_claimed_usd_by_nft_in_window(pos_list_all: List[dict], start_dt: datetime, end_dt: datetime) -> Dict[str, float]:
+    out: Dict[str, float] = {}
+    seen = set()  # (txh, type, nft_id)
+
+    for pos in (pos_list_all or []):
+        if not isinstance(pos, dict):
+            continue
+        nft_id = str(pos.get("nft_id") or "UNKNOWN")
+
+        cfs = pos.get("cash_flows") or []
+        if not isinstance(cfs, list):
+            continue
+
+        for cf in cfs:
+            if not isinstance(cf, dict):
+                continue
+            t = _lower(cf.get("type"))
+            if t not in ("fees-collected", "claimed-fees"):
+                continue
+
+            ts = _to_ts_sec(cf.get("timestamp"))
+            if ts is None:
+                continue
+            ts_dt = datetime.fromtimestamp(ts, JST)
+            if ts_dt < start_dt or ts_dt >= end_dt:
+                continue
+
+            txh = _get_tx_hash(cf)
+            key = (txh, t, nft_id)
+            if txh and key in seen:
+                continue
+            if txh:
+                seen.add(key)
+
+            amt_usd = _get_cf_usd_ui_first(cf)
+            if amt_usd is None:
+                continue
+            try:
+                amt_usd = float(amt_usd)
+            except Exception:
+                continue
+            if amt_usd <= 0:
+                continue
+
+            out[nft_id] = float(out.get(nft_id, 0.0) or 0.0) + amt_usd
+
+    return out
+
 # ================================
 # Metrics derived from Sheets log
 # ================================
@@ -604,20 +600,19 @@ def sum_month_to_date(history: List[List[str]], period_end: datetime, value_col_
 def sum_all_time(history: List[List[str]], value_col_idx: int) -> float:
     return sum(_row_val(r, value_col_idx) for r in history)
 
-def first_record_dt(history: List[List[str]]) -> Optional[datetime]:
-    for r in history:
-        dt = _row_period_dt(r)
-        if dt:
-            return dt
-    return None
-
 # ================================
 # NFT block (simple)
+# APR uses "confirmed fee" (cash_flows) divided by Net. Weekly uses 7d avg.
 # ================================
-from typing import List, Optional
+def build_nft_lines_simple(
+    pos_open: List[dict],
+    fee_by_nft: Optional[Dict[str, float]] = None,
+    window_days: int = 1,
+) -> List[str]:
+    fee_by_nft = fee_by_nft or {}
+    d = max(int(window_days or 1), 1)
 
-def build_nft_lines_simple(pos_open: List[dict], net_total=None) -> List[str]:
-    lines = []
+    lines: List[str] = []
     for pos in (pos_open or []):
         nft_id = str(pos.get("nft_id") or "").strip()
         if not nft_id:
@@ -626,8 +621,9 @@ def build_nft_lines_simple(pos_open: List[dict], net_total=None) -> List[str]:
         status = "OUT OF RANGE" if pos.get("in_range") is False else "ACTIVE"
         net = float(calc_net_usd(pos) or 0.0)
 
-        fees_value = float(to_f(pos.get("fees_value"), 0.0) or 0.0)
-        apr = (fees_value / net) * 365.0 * 100.0 if net > 0 else 0.0
+        fee_window = float(fee_by_nft.get(nft_id, 0.0) or 0.0)
+        fee_per_day = fee_window / d
+        apr = (fee_per_day / net) * 365.0 * 100.0 if net > 0 else 0.0
 
         url = build_uniswap_link_base(nft_id)
         nft_link = f'<a href="{h(url)}">{h(nft_id)}</a>'
@@ -635,7 +631,9 @@ def build_nft_lines_simple(pos_open: List[dict], net_total=None) -> List[str]:
         lines.append(
             f"{nft_link} | {h(status)} | Net {fmt_money(net)} | APR {fmt_pct(apr)}"
         )
+
     return lines
+
 # ================================
 # Build DAILY / WEEKLY messages (templates fixed)
 # ================================
@@ -649,7 +647,7 @@ def build_daily_message(
 ) -> str:
     emitted_7d = sum_last_n_days(history, 7, 6)
     avg_emitted_7d = emitted_7d / 7.0 if emitted_7d > 0 else 0.0
-    apr_7d = (avg_emitted_7d / net_total) * 365 * 100 if net_total > 0 else 0.0
+    apr_7d = (avg_emitted_7d / net_total) * 365.0 * 100.0 if net_total > 0 else 0.0
 
     mtd_emitted = sum_month_to_date(history, period_end, 6)
     avg_emitted_day_7d = avg_emitted_7d
@@ -678,7 +676,6 @@ def build_daily_message(
     )
     return msg
 
-
 def build_weekly_message(
     safe_address: str,
     period_end: datetime,
@@ -686,6 +683,7 @@ def build_weekly_message(
     history: List[List[str]],
     nft_lines: List[str],
 ) -> str:
+    # claimed_24h_usd is column idx 4 in DAILY_LOG rows
     week_claimed = sum_last_n_days(history, 7, 4)
     prev_week_claimed = sum_prev_n_days(history, 7, 4)
     avg_claimed_day = week_claimed / 7.0 if week_claimed > 0 else 0.0
@@ -696,9 +694,8 @@ def build_weekly_message(
         sign = "+" if wow >= 0 else ""
         wow_txt = f"{sign}{wow:.1f}%"
 
-    emitted_7d = sum_last_n_days(history, 7, 6)
-    avg_emitted_7d = emitted_7d / 7.0 if emitted_7d > 0 else 0.0
-    apr_7d = (avg_emitted_7d / net_total) * 365 * 100 if net_total > 0 else 0.0
+    # Weekly APR should be based on claimed (confirmed) average per day
+    apr_7d = (avg_claimed_day / net_total) * 365.0 * 100.0 if net_total > 0 else 0.0
 
     mtd_emitted = sum_month_to_date(history, period_end, 6)
     all_emitted = sum_all_time(history, 6)
@@ -730,6 +727,7 @@ def build_weekly_message(
         + "\n"
     )
     return msg
+
 # ================================
 # config
 # ================================
@@ -775,6 +773,33 @@ def compute_today_metrics(
     claimed_by_nft = calc_claimed_usd_by_nft_in_window(pos_all, start_dt, period_end)
 
     return pos_open, pos_all, float(net_total), float(claimed_24h), float(unclaimed), int(tx_24h), claimed_by_nft
+
+def compute_weekly_nft_snapshot_metrics(
+    safe_address: str,
+    period_end: datetime,
+) -> Tuple[List[dict], float, Dict[str, float]]:
+    """
+    WEEKLY用：
+      - pos_open（スナップショット）
+      - net_total（openのNet合算）
+      - claimed_7d_by_nft（7日窓の確定USD）
+    """
+    start_dt = period_end - timedelta(days=7)
+
+    positions_open = fetch_positions(safe_address, active=True)
+    positions_exited = fetch_positions(safe_address, active=False)
+
+    pos_open = _normalize_positions(positions_open)
+    pos_exited = _normalize_positions(positions_exited)
+    pos_all = pos_open + pos_exited
+
+    net_total = 0.0
+    for pos in pos_open:
+        net_total += float(to_f(calc_net_usd(pos)) or 0.0)
+
+    claimed_by_nft_7d = calc_claimed_usd_by_nft_in_window(pos_all, start_dt, period_end)
+
+    return pos_open, float(net_total), claimed_by_nft_7d
 
 def get_yesterday_unclaimed_from_history(history: List[List[str]]) -> float:
     if not history:
@@ -837,12 +862,10 @@ def main():
             # WEEKLY
             # ----------------
             if mode == "WEEKLY":
-                # 週次側で必要なメトリクスを取る関数を呼ぶ（※実装済みの関数名に合わせて置換）
-                # 例: compute_weekly_metrics(safe_address, period_end) を用意してそこへ集約
-                pos_open, net_total, claimed_by_nft = compute_weekly_nft_snapshot_metrics(
+                pos_open, net_total, claimed_by_nft_7d = compute_weekly_nft_snapshot_metrics(
                     safe_address, period_end
                 )
-                nft_lines = build_nft_lines_simple(pos_open, claimed_by_nft)
+                nft_lines = build_nft_lines_simple(pos_open, claimed_by_nft_7d, window_days=7)
 
                 msg = build_weekly_message(
                     safe_address=safe_address,
@@ -852,7 +875,7 @@ def main():
                     nft_lines=nft_lines,
                 )
                 send_telegram(msg, chat_id)
-                continue  # ✅ Weeklyはここで終了
+                continue  # Weeklyはここで終了
 
             # ----------------
             # DAILY
@@ -897,8 +920,8 @@ def main():
             if sheets_enabled and ws_wide:
                 append_daily_wide_numbered(ws_wide, period_end, safe_name, safe_address, claimed_24h)
 
-            # NFT lines (simple, linked, base) - APRは claimed_by_nft を分子にする版を使う
-            nft_lines = build_nft_lines_simple(pos_open, claimed_by_nft)
+            # NFT lines (simple, linked, base) - APR is claimed_24h_by_nft / Net * 365
+            nft_lines = build_nft_lines_simple(pos_open, claimed_by_nft, window_days=1)
 
             msg = build_daily_message(
                 safe_address=safe_address,
