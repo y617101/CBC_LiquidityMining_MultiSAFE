@@ -1050,7 +1050,7 @@ def main():
 
             if mode == "WEEKLY":
                 # 週次は compute_weekly_confirmed_metrics を使う（存在する関数）
-                pos_open, net_total, _by_nft_7d, week_claimed, prev_week_claimed = compute_weekly_confirmed_metrics(
+                pos_open, net_total, _by_nft_7d, week_claimed, prev_week_claimed, mtd_confirmed, all_confirmed = compute_weekly_confirmed_metrics(
                     safe_address, period_end
                 )
                 msg = build_weekly_message(
