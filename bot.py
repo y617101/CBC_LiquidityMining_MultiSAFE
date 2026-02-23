@@ -613,13 +613,8 @@ def first_record_dt(history: List[List[str]]) -> Optional[datetime]:
 # ================================
 from typing import List, Optional
 
-def build_nft_lines_simple(pos_open: List[dict], net_total: Optional[float] = None) -> List[str]:
-    """
-    pos_open: positions(list)
-    net_total: 互換用（呼び出し側が2引数でも落ちないように受ける）。この関数内では未使用。
-    """
-    lines: List[str] = []
-
+def build_nft_lines_simple(pos_open: List[dict], net_total=None) -> List[str]:
+    lines = []
     for pos in (pos_open or []):
         nft_id = str(pos.get("nft_id") or "").strip()
         if not nft_id:
@@ -628,19 +623,16 @@ def build_nft_lines_simple(pos_open: List[dict], net_total: Optional[float] = No
         status = "OUT OF RANGE" if pos.get("in_range") is False else "ACTIVE"
         net = float(calc_net_usd(pos) or 0.0)
 
-        # NOTE: ここは「今の計算に合わせて」で fees_value を使ってAPR算出（必要なら差し替え）
         fees_value = float(to_f(pos.get("fees_value"), 0.0) or 0.0)
         apr = (fees_value / net) * 365.0 * 100.0 if net > 0 else 0.0
 
         url = build_uniswap_link_base(nft_id)
-        nft_link = f'<a href="{h(url)}">{h(nft_id)}</a>'  # NFT IDを青リンク表示
+        nft_link = f'<a href="{h(url)}">{h(nft_id)}</a>'
 
         lines.append(
             f"{nft_link} | {h(status)} | Net {fmt_money(net)} | APR {fmt_pct(apr)}"
         )
-
     return lines
-
 # ================================
 # Build DAILY / WEEKLY messages (templates fixed)
 # ================================
