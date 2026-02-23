@@ -24,10 +24,9 @@ def build_basescan_addr_link(addr: str) -> str:
 
 def mask_safe_addr(addr: str) -> str:
     a = (addr or "").strip()
-    # 0x + 先頭5 + 末尾4 を満たさない短いアドレスはそのまま
     if len(a) <= (2 + 5 + 4):
         return a
-    return f"{a[:2+5]}*****{a[-4:]}"  # 例: 0xB1A76*****89734
+    return f"{a[:2+5]}*****{a[-4:]}"
 
 def h(x) -> str:
     return html.escape(str(x), quote=True)
@@ -62,11 +61,39 @@ def _lower(s):
     return str(s or "").strip().lower()
 
 def _to_ts_sec(ts):
+    """
+    Accept epoch seconds/ms, numeric string, or ISO string.
+    Returns int seconds (UTC-based epoch).
+    """
     try:
-        ts_i = int(ts)
-        if ts_i > 10_000_000_000:  # ms -> sec
-            ts_i //= 1000
-        return ts_i
+        if ts is None:
+            return None
+
+        # numeric-like
+        if isinstance(ts, (int, float)):
+            ts_i = int(ts)
+            if ts_i > 10_000_000_000:  # ms -> sec
+                ts_i //= 1000
+            return ts_i
+
+        s = str(ts).strip()
+        if not s:
+            return None
+
+        if s.isdigit():
+            ts_i = int(s)
+            if ts_i > 10_000_000_000:
+                ts_i //= 1000
+            return ts_i
+
+        # ISO string (best-effort)
+        # handle trailing Z
+        if s.endswith("Z"):
+            s = s[:-1] + "+00:00"
+        dt = datetime.fromisoformat(s)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return int(dt.timestamp())
     except Exception:
         return None
 
@@ -97,18 +124,10 @@ def get_period_end_jst(now: Optional[datetime] = None) -> datetime:
     return now.replace(hour=9, minute=0, second=0, microsecond=0)
 
 def pick_mode_auto(now: Optional[datetime] = None) -> str:
-    """
-    Sunday only WEEKLY, otherwise DAILY.
-    Python weekday: Mon=0 ... Sun=6
-    """
     now = now or datetime.now(JST)
     return "WEEKLY" if now.weekday() == 6 else "DAILY"
 
 def get_mode() -> str:
-    """
-    If REPORT_MODE is set explicitly -> honor it.
-    Else -> AUTO by weekday.
-    """
     raw = (os.getenv("REPORT_MODE") or "").strip().upper()
     if raw in ("DAILY", "WEEKLY"):
         return raw
@@ -245,7 +264,7 @@ def upsert_daily_log_row(
     rows = read_log_rows(ws)
 
     target_row_idx = None
-    for i, row in enumerate(rows, start=2):  # header row=1
+    for i, row in enumerate(rows, start=2):
         if len(row) < 3:
             continue
         if row[0].strip() == period_key and row[2].strip().lower() == safe_address.strip().lower():
@@ -276,12 +295,10 @@ def get_daily_wide_ws(sh):
     return sh.worksheet(tab_name)
 
 def append_daily_wide_numbered(ws, period_end_jst, safe_name, safe_address, claimed_usd_24h):
-    # スクショ寄せ: 2026-02-23 9:00
     period_key = f"{period_end_jst.strftime('%Y-%m-%d')} {period_end_jst.hour}:{period_end_jst.strftime('%M')}"
 
     values = sheets_call(ws.get_all_values) or []
 
-    # 初期化（空）
     if not values:
         sheets_call(ws.update, range_name="A1", values=[["", 1]])
         sheets_call(ws.update, range_name="A2", values=[["period_end_jst", safe_name]])
@@ -290,7 +307,6 @@ def append_daily_wide_numbered(ws, period_end_jst, safe_name, safe_address, clai
         print("DBG: initialized DAILY_WIDE", flush=True)
         return
 
-    # ヘッダー確保
     if len(values) < 2:
         sheets_call(ws.update, range_name="A2", values=[["period_end_jst"]])
         values = sheets_call(ws.get_all_values) or []
@@ -307,9 +323,8 @@ def append_daily_wide_numbered(ws, period_end_jst, safe_name, safe_address, clai
     if not header_addrs or header_addrs[0] != "safe_address":
         header_addrs = ["safe_address"] + header_addrs[1:]
 
-    # SAFE列追加
     if safe_name not in header_names:
-        current_safe_cols = max(0, len(header_names) - 1)  # A列除く
+        current_safe_cols = max(0, len(header_names) - 1)
         next_no = current_safe_cols + 1
 
         max_len = max(len(header_nums), len(header_names), len(header_addrs))
@@ -327,14 +342,13 @@ def append_daily_wide_numbered(ws, period_end_jst, safe_name, safe_address, clai
 
         print("DBG: added SAFE column", safe_name, "no", next_no, flush=True)
     else:
-        col_idx = header_names.index(safe_name) + 1  # 1-based
+        col_idx = header_names.index(safe_name) + 1
         existing = header_addrs[col_idx - 1] if len(header_addrs) >= col_idx else ""
         if not str(existing or "").strip():
             sheets_call(ws.update_cell, 3, col_idx, safe_address)
 
-    col_idx = header_names.index(safe_name) + 1  # 1-based
+    col_idx = header_names.index(safe_name) + 1
 
-    # 日付行検索（4行目以降）
     row_idx = None
     for i, row in enumerate(values[3:], start=4):
         if len(row) >= 1 and row[0].strip() == period_key:
@@ -378,7 +392,6 @@ def extract_debt_usd(pos) -> float:
     if not isinstance(cfs, list):
         return 0.0
 
-    # Prefer latest total_debt from lendor flows
     latest_td = None
     latest_ts = -1
     for cf in cfs:
@@ -396,7 +409,6 @@ def extract_debt_usd(pos) -> float:
     if latest_td is not None:
         return max(float(latest_td), 0.0)
 
-    # Fallback: borrows - repays by USD
     borrow = 0.0
     repay = 0.0
     for cf in cfs:
@@ -433,8 +445,18 @@ def calc_net_usd(pos) -> Optional[float]:
 # ================================
 # Fees (USD) helpers
 # ================================
+def _norm_cf_type(t: str) -> str:
+    s = _lower(t)
+    s = s.replace("_", "-").replace(" ", "-")
+    return s
+
 def _get_cf_usd_ui_first(cf: dict) -> Optional[float]:
+    """
+    USD key variations:
+    - Revert UI / API may expose different keys
+    """
     candidates = [
+        # UI-ish / hodl
         "hodl_value",
         "hodl_value_usd",
         "hodlValue",
@@ -443,15 +465,29 @@ def _get_cf_usd_ui_first(cf: dict) -> Optional[float]:
         "hodlUsd",
         "hodl_valueUsd",
         "hodl_valueUSD",
+
+        # common USD fields
+        "usd_value",
+        "usdValue",
+        "value_usd",
+        "valueUsd",
+        "amount_usd",
+        "amountUsd",
+        "amountUSD",
+        "usd",
     ]
     for k in candidates:
         v = to_f(cf.get(k))
         if v is not None:
             return float(v)
-    v = to_f(cf.get("amount_usd"))
-    if v is not None:
-        return float(v)
     return None
+
+def _is_claimed_type(cf_type: str) -> bool:
+    """
+    Accept slight variants.
+    """
+    t = _norm_cf_type(cf_type)
+    return t in ("fees-collected", "claimed-fees", "fee-collected", "feescollected", "claimedfees")
 
 def calc_claimed_usd_in_window(pos_list_all: List[dict], start_dt: datetime, end_dt: datetime) -> Tuple[float, int]:
     total = 0.0
@@ -470,8 +506,8 @@ def calc_claimed_usd_in_window(pos_list_all: List[dict], start_dt: datetime, end
         for cf in cfs:
             if not isinstance(cf, dict):
                 continue
-            t = _lower(cf.get("type"))
-            if t not in ("fees-collected", "claimed-fees"):
+
+            if not _is_claimed_type(cf.get("type")):
                 continue
 
             ts = _to_ts_sec(cf.get("timestamp"))
@@ -482,7 +518,7 @@ def calc_claimed_usd_in_window(pos_list_all: List[dict], start_dt: datetime, end
                 continue
 
             txh = _get_tx_hash(cf)
-            key = (txh, t, nft_id)
+            key = (txh, _norm_cf_type(cf.get("type")), nft_id)
             if txh and key in seen:
                 continue
             if txh:
@@ -519,8 +555,8 @@ def calc_claimed_usd_by_nft_in_window(pos_list_all: List[dict], start_dt: dateti
         for cf in cfs:
             if not isinstance(cf, dict):
                 continue
-            t = _lower(cf.get("type"))
-            if t not in ("fees-collected", "claimed-fees"):
+
+            if not _is_claimed_type(cf.get("type")):
                 continue
 
             ts = _to_ts_sec(cf.get("timestamp"))
@@ -531,7 +567,7 @@ def calc_claimed_usd_by_nft_in_window(pos_list_all: List[dict], start_dt: dateti
                 continue
 
             txh = _get_tx_hash(cf)
-            key = (txh, t, nft_id)
+            key = (txh, _norm_cf_type(cf.get("type")), nft_id)
             if txh and key in seen:
                 continue
             if txh:
@@ -577,12 +613,6 @@ def sum_last_n_days(history: List[List[str]], n: int, value_col_idx: int) -> flo
         return 0.0
     tail = history[-n:] if len(history) >= n else history[:]
     return sum(_row_val(r, value_col_idx) for r in tail)
-
-def sum_prev_n_days(history: List[List[str]], n: int, value_col_idx: int) -> float:
-    if n <= 0 or len(history) <= n:
-        return 0.0
-    prev = history[-2*n:-n] if len(history) >= 2*n else history[:-n]
-    return sum(_row_val(r, value_col_idx) for r in prev)
 
 def sum_month_to_date(history: List[List[str]], period_end: datetime, value_col_idx: int) -> float:
     m = period_end.astimezone(JST).month
@@ -635,7 +665,7 @@ def build_nft_lines_simple(
     return lines
 
 # ================================
-# Build DAILY / WEEKLY messages (templates fixed)
+# Build DAILY / WEEKLY messages
 # ================================
 def build_daily_message(
     safe_address: str,
@@ -645,12 +675,11 @@ def build_daily_message(
     history: List[List[str]],
     nft_lines: List[str],
 ) -> str:
-    emitted_7d = sum_last_n_days(history, 7, 6)
+    emitted_7d = sum_last_n_days(history, 7, 6)  # emitted_usd col
     avg_emitted_7d = emitted_7d / 7.0 if emitted_7d > 0 else 0.0
     apr_7d = (avg_emitted_7d / net_total) * 365.0 * 100.0 if net_total > 0 else 0.0
 
     mtd_emitted = sum_month_to_date(history, period_end, 6)
-    avg_emitted_day_7d = avg_emitted_7d
 
     safe_link = fmt_safe_link(safe_address)
 
@@ -669,7 +698,7 @@ def build_daily_message(
         "🎉 当日DEX手数料収益\n"
         f"{fmt_money(emitted_today)}\n\n"
         "📆 1日あたりDEX手数料収益（直近7日平均）\n"
-        f"{fmt_money(avg_emitted_day_7d)}\n\n"
+        f"{fmt_money(avg_emitted_7d)}\n\n"
         "📊 NFT Positions\n"
         + ("\n".join(nft_lines) if nft_lines else "—")
         + "\n"
@@ -680,23 +709,22 @@ def build_weekly_message(
     safe_address: str,
     period_end: datetime,
     net_total: float,
+    week_claimed: float,
+    prev_week_claimed: float,
     history: List[List[str]],
     nft_lines: List[str],
 ) -> str:
-    # claimed_24h_usd is column idx 4 in DAILY_LOG rows
-    week_claimed = sum_last_n_days(history, 7, 4)
-    prev_week_claimed = sum_prev_n_days(history, 7, 4)
     avg_claimed_day = week_claimed / 7.0 if week_claimed > 0 else 0.0
 
     wow_txt = "—"
     if prev_week_claimed > 0:
-        wow = ((week_claimed - prev_week_claimed) / prev_week_claimed) * 100
+        wow = ((week_claimed - prev_week_claimed) / prev_week_claimed) * 100.0
         sign = "+" if wow >= 0 else ""
         wow_txt = f"{sign}{wow:.1f}%"
 
-    # Weekly APR should be based on claimed (confirmed) average per day
     apr_7d = (avg_claimed_day / net_total) * 365.0 * 100.0 if net_total > 0 else 0.0
 
+    # Monthly / All-time are emitted-based from history (your existing UI)
     mtd_emitted = sum_month_to_date(history, period_end, 6)
     all_emitted = sum_all_time(history, 6)
 
@@ -774,17 +802,22 @@ def compute_today_metrics(
 
     return pos_open, pos_all, float(net_total), float(claimed_24h), float(unclaimed), int(tx_24h), claimed_by_nft
 
-def compute_weekly_nft_snapshot_metrics(
+def compute_weekly_confirmed_metrics(
     safe_address: str,
     period_end: datetime,
-) -> Tuple[List[dict], float, Dict[str, float]]:
+) -> Tuple[List[dict], float, Dict[str, float], float, float]:
     """
-    WEEKLY用：
+    WEEKLY用（API直参照）：
       - pos_open（スナップショット）
       - net_total（openのNet合算）
-      - claimed_7d_by_nft（7日窓の確定USD）
+      - claimed_7d_by_nft（今週7日窓の確定USD）
+      - week_claimed_total（SAFE合算）
+      - prev_week_claimed_total（前週7日窓のSAFE合算）
     """
-    start_dt = period_end - timedelta(days=7)
+    start_this = period_end - timedelta(days=7)
+    end_this = period_end
+    start_prev = period_end - timedelta(days=14)
+    end_prev = period_end - timedelta(days=7)
 
     positions_open = fetch_positions(safe_address, active=True)
     positions_exited = fetch_positions(safe_address, active=False)
@@ -797,9 +830,13 @@ def compute_weekly_nft_snapshot_metrics(
     for pos in pos_open:
         net_total += float(to_f(calc_net_usd(pos)) or 0.0)
 
-    claimed_by_nft_7d = calc_claimed_usd_by_nft_in_window(pos_all, start_dt, period_end)
+    claimed_by_nft_7d = calc_claimed_usd_by_nft_in_window(pos_all, start_this, end_this)
+    claimed_by_nft_prev = calc_claimed_usd_by_nft_in_window(pos_all, start_prev, end_prev)
 
-    return pos_open, float(net_total), claimed_by_nft_7d
+    week_claimed_total = float(sum((claimed_by_nft_7d or {}).values()))
+    prev_week_claimed_total = float(sum((claimed_by_nft_prev or {}).values()))
+
+    return pos_open, float(net_total), claimed_by_nft_7d, week_claimed_total, prev_week_claimed_total
 
 def get_yesterday_unclaimed_from_history(history: List[List[str]]) -> float:
     if not history:
@@ -807,33 +844,6 @@ def get_yesterday_unclaimed_from_history(history: List[List[str]]) -> float:
     if len(history) >= 2:
         return _row_val(history[-2], 5)
     return 0.0
-
-def compute_weekly_nft_snapshot_metrics(
-    safe_address: str,
-    period_end: datetime,
-) -> Tuple[List[dict], float, Dict[str, float]]:
-    """
-    WEEKLY用：
-      - pos_open（スナップショット）
-      - net_total（openのNet合算）
-      - claimed_7d_by_nft（7日窓の確定USD）
-    """
-    start_dt = period_end - timedelta(days=7)
-
-    positions_open = fetch_positions(safe_address, active=True)
-    positions_exited = fetch_positions(safe_address, active=False)
-
-    pos_open = _normalize_positions(positions_open)
-    pos_exited = _normalize_positions(positions_exited)
-    pos_all = pos_open + pos_exited
-
-    net_total = 0.0
-    for pos in pos_open:
-        net_total += float(to_f(calc_net_usd(pos)) or 0.0)
-
-    claimed_by_nft_7d = calc_claimed_usd_by_nft_in_window(pos_all, start_dt, period_end)
-
-    return pos_open, float(net_total), claimed_by_nft_7d
 
 # ================================
 # main
@@ -850,7 +860,7 @@ def main():
 
     period_end = get_period_end_jst()
 
-    # Sheets init（Weeklyは基本書かない前提でも、history参照に使うので読む）
+    # Sheets init（Weeklyもmtd/all-time表示に使うので読む）
     sheets_enabled = True
     ws_log = None
     ws_wide = None
@@ -864,7 +874,6 @@ def main():
         sheets_enabled = False
         print(f"DBG: Sheets disabled (err={e})", flush=True)
 
-    # Read whole log once
     all_rows: List[List[str]] = []
     if sheets_enabled and ws_log:
         all_rows = read_log_rows(ws_log)
@@ -882,25 +891,28 @@ def main():
             continue
 
         try:
-            # history for this safe (BEFORE write)
             safe_hist = get_safe_history(all_rows, safe_address)
 
             # ----------------
             # WEEKLY
             # ----------------
             if mode == "WEEKLY":
-                pos_open, net_total, claimed_by_nft_7d = compute_weekly_nft_snapshot_metrics(safe_address, period_end)
+                pos_open, net_total, claimed_by_nft_7d, week_claimed, prev_week_claimed = compute_weekly_confirmed_metrics(
+                    safe_address, period_end
+                )
                 nft_lines = build_nft_lines_simple(pos_open, claimed_by_nft_7d, window_days=7)
 
                 msg = build_weekly_message(
                     safe_address=safe_address,
                     period_end=period_end,
                     net_total=net_total,
+                    week_claimed=week_claimed,
+                    prev_week_claimed=prev_week_claimed,
                     history=safe_hist,
                     nft_lines=nft_lines,
                 )
                 send_telegram(msg, chat_id)
-                continue  # Weeklyはここで終了
+                continue
 
             # ----------------
             # DAILY
@@ -916,7 +928,6 @@ def main():
                 delta_unclaimed = 0.0
             emitted_today = float(delta_unclaimed) + float(claimed_24h)
 
-            # ✅ Sheets: DAILY_LOG（縦）
             if sheets_enabled and ws_log:
                 upsert_daily_log_row(
                     ws_log,
@@ -929,7 +940,6 @@ def main():
                     emitted_today,
                 )
 
-                # in-memory append（次SAFEのhistory参照にも使う）
                 all_rows.append([
                     period_end.strftime("%Y-%m-%d %H:%M"),
                     safe_name,
@@ -941,11 +951,9 @@ def main():
                 ])
                 safe_hist = get_safe_history(all_rows, safe_address)
 
-            # ✅ Sheets: DAILY_WIDE（横）… claimed_24h を格納（既存仕様）
             if sheets_enabled and ws_wide:
                 append_daily_wide_numbered(ws_wide, period_end, safe_name, safe_address, claimed_24h)
 
-            # NFT lines (simple, linked, base) - APR is claimed_24h_by_nft / Net * 365
             nft_lines = build_nft_lines_simple(pos_open, claimed_by_nft, window_days=1)
 
             msg = build_daily_message(
