@@ -3,6 +3,7 @@ import json
 import html
 import time
 import requests
+print("DBG BOOT MARKER: 2026-02-24-AAAA", flush=True)
 from datetime import datetime, timedelta, timezone
 from typing import Dict, List, Optional, Tuple
 
