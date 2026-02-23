@@ -798,7 +798,7 @@ def main():
 
     period_end = get_period_end_jst()
 
-    # Sheets init
+    # Sheets init（Weeklyは基本書かない前提でも、history参照に使うので読む）
     sheets_enabled = True
     ws_log = None
     ws_wide = None
@@ -833,6 +833,30 @@ def main():
             # history for this safe (BEFORE write)
             safe_hist = get_safe_history(all_rows, safe_address)
 
+            # ----------------
+            # WEEKLY
+            # ----------------
+            if mode == "WEEKLY":
+                # 週次側で必要なメトリクスを取る関数を呼ぶ（※実装済みの関数名に合わせて置換）
+                # 例: compute_weekly_metrics(safe_address, period_end) を用意してそこへ集約
+                pos_open, net_total, claimed_by_nft = compute_weekly_nft_snapshot_metrics(
+                    safe_address, period_end
+                )
+                nft_lines = build_nft_lines_simple(pos_open, claimed_by_nft)
+
+                msg = build_weekly_message(
+                    safe_address=safe_address,
+                    period_end=period_end,
+                    net_total=net_total,
+                    history=safe_hist,
+                    nft_lines=nft_lines,
+                )
+                send_telegram(msg, chat_id)
+                continue  # ✅ Weeklyはここで終了
+
+            # ----------------
+            # DAILY
+            # ----------------
             pos_open, _pos_all, net_total, claimed_24h, unclaimed_today, _tx_24h, claimed_by_nft = compute_today_metrics(
                 safe_address, period_end
             )
@@ -856,7 +880,8 @@ def main():
                     unclaimed_today,
                     emitted_today,
                 )
-                # in-memory append
+
+                # in-memory append（次SAFEのhistory参照にも使う）
                 all_rows.append([
                     period_end.strftime("%Y-%m-%d %H:%M"),
                     safe_name,
@@ -872,29 +897,18 @@ def main():
             if sheets_enabled and ws_wide:
                 append_daily_wide_numbered(ws_wide, period_end, safe_name, safe_address, claimed_24h)
 
-            # NFT lines (simple, linked, base)
+            # NFT lines (simple, linked, base) - APRは claimed_by_nft を分子にする版を使う
             nft_lines = build_nft_lines_simple(pos_open, claimed_by_nft)
 
-            # Telegram
-            if mode == "WEEKLY":
-                msg = build_weekly_message(
-                    safe_address=safe_address,
-                    period_end=period_end,
-                    net_total=net_total,
-                    history=safe_hist,
-                    nft_lines=nft_lines,
-                )
-                send_telegram(msg, chat_id)
-            else:
-                msg = build_daily_message(
-                    safe_address=safe_address,
-                    period_end=period_end,
-                    net_total=net_total,
-                    emitted_today=emitted_today,
-                    history=safe_hist,
-                    nft_lines=nft_lines,
-                )
-                send_telegram(msg, chat_id)
+            msg = build_daily_message(
+                safe_address=safe_address,
+                period_end=period_end,
+                net_total=net_total,
+                emitted_today=emitted_today,
+                history=safe_hist,
+                nft_lines=nft_lines,
+            )
+            send_telegram(msg, chat_id)
 
         except Exception as e:
             print(f"error name={safe_name} safe={safe_address}: {e}", flush=True)
