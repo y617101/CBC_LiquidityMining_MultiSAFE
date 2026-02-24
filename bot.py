@@ -176,8 +176,7 @@ def pick_confirmed_cf(cash_flows, period_start: datetime, period_end: datetime) 
             continue
 
         txh = (_get_tx_hash(cf) or "").lower()
-        nft = str(cf.get("nft_id") or cf.get("token_id") or "").strip()
-
+        nft = str(cf.get("nft_id") or cf.get("token_id") or cf.get("_pos_nft_id") or "").strip()
         prices = cf.get("prices") or {}
         p0 = _to_f(((prices.get("token0") or {}).get("usd")))
         p1 = _to_f(((prices.get("token1") or {}).get("usd")))
@@ -261,7 +260,12 @@ for cf in cash_flows_all:
         grouped: Dict[tuple, List[dict]] = {}
     
         for r in rows:
-            k = (r.get("tx_hash", ""), r.get("nft_id", ""))
+            tx = r.get("tx_hash", "") or ""
+            nft = r.get("nft_id", "") or ""
+            fallback = ""
+            raw = r.get("raw") or {}
+            fallback = str(raw.get("timestamp") or raw.get("date") or "")
+            k = (tx, nft if nft else f"__no_nft__{fallback}")
             grouped.setdefault(k, []).append(r)
     
         picked: List[dict] = []
@@ -1296,9 +1300,16 @@ def compute_weekly_confirmed_metrics(
     # pos_all から cash_flows を集める
     cash_flows_all = []
     for pos in (pos_all or []):
+        pos_nft = str(pos.get("nft_id") or "").strip()
         cfs = pos.get("cash_flows") or []
-        if isinstance(cfs, list):
-            cash_flows_all.extend(cfs)
+        if not isinstance(cfs, list):
+            continue
+        for cf in cfs:
+            if isinstance(cf, dict) and pos_nft:
+                # cf側にnft_idが無い/空なら pos由来を補完
+                if not (cf.get("nft_id") or cf.get("token_id")):
+                    cf["_pos_nft_id"] = pos_nft
+            cash_flows_all.append(cf)
     # --- MTD ---
     mtd_rows = pick_confirmed_cf(cash_flows_all, month_start, period_end)
     
