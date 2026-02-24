@@ -153,8 +153,8 @@ def pick_confirmed_cf(cash_flows, period_start: datetime, period_end: datetime) 
     """
     rows = []
 
-    # ✅ ここに置く（for の外）
-        def _norm_confirmed_row(cf: dict, txh: str, nft: str, usd_val: float) -> dict:
+    # ✅ for の外（rows=[] と同じインデント）に置く
+    def _norm_confirmed_row(cf: dict, txh: str, nft: str, usd_val: float) -> dict:
         # token0/1 addr はrawに無いことが多いので空でもOK（amountは拾う）
         amount0 = cf.get("amount0")
         amount1 = cf.get("amount1")
@@ -168,7 +168,7 @@ def pick_confirmed_cf(cash_flows, period_start: datetime, period_end: datetime) 
                 if amount1 is None:
                     amount1 = amts[1]
 
-        # ここが最重要：usd は cf から取らず “計算済み” を使う
+        # ✅ usd は cf から取らず “計算済み” を使う
         return {
             "usd": float(usd_val or 0.0),
             "token0_addr": (cf.get("token0_addr") or "").lower(),
@@ -180,7 +180,8 @@ def pick_confirmed_cf(cash_flows, period_start: datetime, period_end: datetime) 
             "nft_id": nft or "",
             "raw": cf,
         }
-    # ✅ ここから下は今のロジックのまま
+
+    # ✅ ここから下はロジック本体
     for cf in (cash_flows or []):
         t = _norm_cf_type(cf.get("type"))
         if not is_claimed_type(t):
@@ -189,11 +190,14 @@ def pick_confirmed_cf(cash_flows, period_start: datetime, period_end: datetime) 
         dt = _cf_dt_jst(cf)
         if not dt:
             continue
-
         if not (period_start <= dt < period_end):
             continue
 
-        # ✅ append はここ（for の中）
+        # ✅ ここで txh/nft/usd を必ず定義する
+        txh = (_get_tx_hash(cf) or "").lower()
+        nft = str(cf.get("nft_id") or cf.get("token_id") or cf.get("tokenId") or "").strip()
+        usd = _get_cf_usd(cf)
+
         rows.append(_norm_confirmed_row(cf, txh, nft, usd))
 
     # 同一tx + nft は1回だけにする（claimed-fees優先）
@@ -211,9 +215,10 @@ def pick_confirmed_cf(cash_flows, period_start: datetime, period_end: datetime) 
             picked.append(max(arr, key=lambda x: x["usd"]))
 
     return picked
+
+
 # compatibility alias (old/new name)
 _pick_confirmed_cf = pick_confirmed_cf
-
 
 # ================================
 # Constants
