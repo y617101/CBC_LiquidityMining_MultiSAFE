@@ -232,6 +232,22 @@ def to_f(x, default=None):
     except Exception:
         return default
 
+def _sum_weth_usdc_from_rows(rows: list) -> tuple[float, float]:
+    weth = 0.0
+    usdc = 0.0
+    for r in (rows or []):
+        raw = r.get("raw") or {}
+        t0 = (raw.get("token0_addr") or raw.get("token0") or "").lower()
+        t1 = (raw.get("token1_addr") or raw.get("token1") or "").lower()
+        a0 = float(raw.get("amount0") or 0.0)
+        a1 = float(raw.get("amount1") or 0.0)
+
+        if t0 == WETH_ADDR: weth += a0
+        if t1 == WETH_ADDR: weth += a1
+        if t0 == USDC_ADDR: usdc += a0
+        if t1 == USDC_ADDR: usdc += a1
+    return weth, usdc
+
 
 def fmt_money(x):
     try:
