@@ -231,31 +231,36 @@ for cf in cash_flows_all:
     if not (period_start <= dt < period_end):
         continue
 
+    # ここから窓内PASS
     passed += 1
-            # 窓内PASS（サマリ用）
-            # 窓内PASS（サマリ用）
-        if passed <= 5:
-            dbg("DBG PASS sample",
-                "dt=", dt,
-                "type=", cf.get("type"),
-                "tx=", (txh[:10] if txh else ""),
-                "nft=", nft,
-                "usd=", usd
-            )
 
-        txh = (_get_tx_hash(cf) or "").lower().strip()
+    txh = (_get_tx_hash(cf) or "").lower().strip()
+    nft = _get_nft_id(cf)  # 既にあなた側にあるならそのまま。無ければ cf.get("nft_id") 等に置換
+    usd = _cf_usd(cf)      # 既にあなた側にあるならそのまま。無ければ既存の usd 算出変数に置換
+    weth_amt, usdc_amt = _cf_amounts_weth_usdc(cf)  # 既存の計算結果があるならそれを使う
 
-        # rows.append(...) はこの下
-        rows.append({
-            "usd": float(usd),
-            "amount_weth": float(weth_amt),
-            "amount_usdc": float(usdc_amt),
-            "type": cf.get("type") or "",
-            "tx_hash": txh,
-            "nft_id": nft,
-            "raw": cf,
-        })
+    # 窓内PASS（サマリ用）※上位5件だけ
+    if passed <= 5:
+        dbg(
+            "DBG PASS sample",
+            "dt=", dt,
+            "type=", cf.get("type"),
+            "tx=", (txh[:10] if txh else ""),
+            "nft=", nft,
+            "usd=", usd,
+            "weth=", weth_amt,
+            "usdc=", usdc_amt,
+        )
 
+    rows.append({
+        "usd": float(usd or 0.0),
+        "amount_weth": float(weth_amt or 0.0),
+        "amount_usdc": float(usdc_amt or 0.0),
+        "type": cf.get("type") or "",
+        "tx_hash": txh,
+        "nft_id": nft,
+        "raw": cf,
+    })
         # 重複排除（claimed優先）
         grouped: Dict[tuple, List[dict]] = {}
     
