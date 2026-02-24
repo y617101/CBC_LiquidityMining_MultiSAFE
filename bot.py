@@ -1232,22 +1232,11 @@ def compute_weekly_confirmed_metrics(
     week_weth = sum(r.get("amount_weth", 0.0) for r in week_rows)
     week_usdc = sum(r.get("amount_usdc", 0.0) for r in week_rows)
     week_total = sum(r.get("usd", 0.0) for r in week_rows)
+    
     dbg("DBG week_rows len", len(week_rows))
     if week_rows:
         dbg("DBG week_row keys", list(week_rows[0].keys()))
         dbg("DBG week_row sample", str(week_rows[0])[:1200])
-    
-        if x.get("token1_addr", "").lower() == WETH_ADDR:
-            week_weth += float(x.get("amount1", 0))
-    
-        if x.get("token0_addr", "").lower() == USDC_ADDR:
-            week_usdc += float(x.get("amount0", 0))
-        if x.get("token1_addr", "").lower() == USDC_ADDR:
-            week_usdc += float(x.get("amount1", 0))
-        dbg("DBG week_rows len", len(week_rows))
-        if week_rows:
-            dbg("DBG week_row sample keys", list(week_rows[0].keys()))
-            dbg("DBG week_row sample", str(week_rows[0])[:800])
 
 # =========================
 # 追加ここまで
