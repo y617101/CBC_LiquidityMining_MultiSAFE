@@ -215,6 +215,30 @@ def pick_confirmed_cf(cash_flows, period_start: datetime, period_end: datetime) 
                 weth_amt = a1
                 usdc_amt = a0
 
+        # 期間情報（関数冒頭に1回）
+dbg("DBG pick_confirmed_cf window JST:", period_start, period_end)
+
+passed = 0
+for cf in cash_flows_all:
+    # typeフィルタ
+    if not _is_claimed_type(cf.get("type")):
+        continue
+
+    dt = _cf_dt_jst(cf)
+    if not dt:
+        continue
+
+    # ★ここが窓内判定
+    if not (period_start <= dt < period_end):
+        continue
+
+    passed += 1
+    txh = (_get_tx_hash(cf) or "").lower().strip()
+    # “窓内でPASSしたもの”だけ表示
+    dbg("DBG PASS", dt, cf.get("type"), "tx=", txh[:10], "usd=", usd, "weth=", weth_amt, "usdc=", usdc_amt)
+
+    # rows.append(...) はこの下
+
         rows.append({
             "usd": float(usd),
             "amount_weth": float(weth_amt),
@@ -248,7 +272,8 @@ def pick_confirmed_cf(cash_flows, period_start: datetime, period_end: datetime) 
     
             best = max(target, key=lambda item: float(item.get("usd") or 0.0))
             picked.append(best)
-    
+    dbg("DBG pick_confirmed_cf passed/rows:", passed, len(rows))
+    dbg("DBG pick_confirmed_cf grouped/picked:", len(grouped), len(picked))
         return picked
 _pick_confirmed_cf = pick_confirmed_cf
 
@@ -1232,6 +1257,7 @@ def compute_weekly_confirmed_metrics(
     # ここから追加
     # =========================
     dbg("DBG cash_flows_all len", len(cash_flows_all))
+    dbg("DBG WEEK WINDOW start/end JST:", start_this, end_this)
     week_rows = pick_confirmed_cf(cash_flows_all, start_this, end_this)
     week_weth = sum(r.get("amount_weth", 0.0) for r in week_rows)
     week_usdc = sum(r.get("amount_usdc", 0.0) for r in week_rows)
