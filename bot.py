@@ -183,7 +183,7 @@ def pick_confirmed_cf(cash_flows, period_start: datetime, period_end: datetime) 
         nft = str(cf.get("nft_id") or cf.get("token_id") or cf.get("tokenId") or "").strip()
         usd = _get_cf_usd(cf)
 
-        def _norm_confirmed_row(cf: dict) -> dict:
+def _norm_confirmed_row(cf: dict) -> dict:
     def _f(x, default=0.0):
         try:
             return float(x)
