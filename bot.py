@@ -1329,7 +1329,7 @@ def main():
             print(f"skip: missing telegram_chat_id name={safe_name}", flush=True)
             continue
 
-                try:
+        try:
             safe_hist = get_safe_history(all_rows, safe_address)
 
             # ================================
