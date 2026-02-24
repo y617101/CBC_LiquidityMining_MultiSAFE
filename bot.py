@@ -233,7 +233,6 @@ def _norm_confirmed_row(cf: dict) -> dict:
         "nft_id": str(cf.get("nft_id") or cf.get("token_id") or ""),
         "raw": cf,
     }
-        rows.append(_norm_confirmed_row(cf))
 
     # 同一tx + nft は1回だけにする（claimed-fees優先）
     grouped = {}
