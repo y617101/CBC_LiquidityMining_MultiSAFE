@@ -184,33 +184,38 @@ def pick_confirmed_cf(cash_flows, period_start: datetime, period_end: datetime) 
         usd = _get_cf_usd(cf)
 
         def _norm_confirmed_row(cf: dict) -> dict:
-    def _addr(x):
-        if isinstance(x, str):
-            return x
-        if isinstance(x, dict):
-            return x.get("address") or x.get("token_address") or x.get("id") or ""
-        return ""
-
     def _f(x, default=0.0):
         try:
             return float(x)
         except Exception:
             return default
 
-    usd = _f(
-        cf.get("usd")
-        or cf.get("usd_value")
-        or cf.get("value_usd")
-        or cf.get("amount_usd")
-        or 0.0
-    )
+    # 1) まず usd
+    usd = cf.get("usd")
+    if usd is None:
+        usd = cf.get("usd_value") or cf.get("value_usd") or cf.get("amount_usd") or 0.0
 
-    token0 = _addr(cf.get("token0") or cf.get("token0_addr"))
-    token1 = _addr(cf.get("token1") or cf.get("token1_addr"))
+    # 2) token addr（無ければ prices.token0/token1 の token_key で補助）
+    token0 = (cf.get("token0_addr") or cf.get("token0") or "").lower()
+    token1 = (cf.get("token1_addr") or cf.get("token1") or "").lower()
 
+    # ★ここが重要：取れない場合は WETH/USDC を強制セット（Base運用前提）
+    if not token0:
+        token0 = WETH_ADDR
+    if not token1:
+        token1 = USDC_ADDR
+
+    # 3) amount0/amount1（cash_flowによってキーが揺れるので広めに拾う）
     amount0 = cf.get("amount0")
     amount1 = cf.get("amount1")
 
+    # amount0/amount1 が無い場合のフォールバック
+    if amount0 is None:
+        amount0 = cf.get("amount") or cf.get("amount_in") or cf.get("amount_out")
+    if amount1 is None:
+        amount1 = cf.get("amount1")
+
+    # amounts=[a0,a1] 形式も拾う（あなたの元コード踏襲）
     if amount0 is None or amount1 is None:
         amts = cf.get("amounts")
         if isinstance(amts, (list, tuple)) and len(amts) >= 2:
@@ -218,6 +223,13 @@ def pick_confirmed_cf(cash_flows, period_start: datetime, period_end: datetime) 
                 amount0 = amts[0]
             if amount1 is None:
                 amount1 = amts[1]
+
+    # ★最後の保険：raw に amount0/amount1 が居るなら拾う
+    raw = cf if isinstance(cf, dict) else {}
+    if (amount0 is None) and isinstance(raw, dict):
+        amount0 = raw.get("amount0")
+    if (amount1 is None) and isinstance(raw, dict):
+        amount1 = raw.get("amount1")
 
     return {
         "usd": _f(usd),
@@ -228,6 +240,7 @@ def pick_confirmed_cf(cash_flows, period_start: datetime, period_end: datetime) 
         "type": cf.get("type"),
         "tx_hash": cf.get("tx_hash") or cf.get("tx") or "",
         "nft_id": str(cf.get("nft_id") or cf.get("token_id") or ""),
+        "raw": cf,  # DBG用（既に使ってるならOK）
     }
         rows.append(_norm_confirmed_row(cf))
 
