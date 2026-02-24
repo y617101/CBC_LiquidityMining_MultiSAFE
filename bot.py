@@ -1302,7 +1302,14 @@ def main():
 
             if mode == "WEEKLY":
                 # 週次は compute_weekly_confirmed_metrics を使う（存在する関数）
-                pos_open, net_total, _by_nft_7d, week_claimed, prev_week_claimed, mtd_confirmed, all_confirmed = compute_weekly_confirmed_metrics(
+                (
+                  pos_open, net_total, _by_nft_7d,
+                  week_claimed, prev_week_claimed,
+                  mtd_confirmed, all_confirmed,
+                  week_weth, week_usdc,
+                  mtd_weth, mtd_usdc,
+                  all_weth, all_usdc
+                ) = compute_weekly_confirmed_metrics(safe_address, period_end)
                     safe_address, period_end
                 )
                 msg = build_weekly_message(
@@ -1313,12 +1320,12 @@ def main():
                     prev_week_claimed=prev_week_claimed,
                     mtd_confirmed=mtd_confirmed,
                     all_confirmed=all_confirmed,
-                    week_weth=0.0,
-                    week_usdc=0.0,
-                    mtd_weth=0.0,
-                    mtd_usdc=0.0,
-                    all_weth=0.0,
-                    all_usdc=0.0,
+                    week_weth=week_weth,
+                    week_usdc=week_usdc,
+                    mtd_weth=mtd_weth,
+                    mtd_usdc=mtd_usdc,
+                    all_weth=all_weth,
+                    all_usdc=all_usdc,
                     pos_open=pos_open,
                 )
                 send_telegram(msg, chat_id)
