@@ -36,6 +36,72 @@ def _is_claimed_type(cf_type) -> bool:
 def is_claimed_type(cf_type) -> bool:
     return _is_claimed_type(cf_type)
 
+WETH_ADDR = "0x4200000000000000000000000000000000000006".lower()
+USDC_ADDR = "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913".lower()
+
+def _get_cf_token_addr(cf: dict, which: str) -> str:
+    v = cf.get(which)
+    if isinstance(v, dict):
+        return str(v.get("address") or v.get("id") or "").strip().lower()
+    if isinstance(v, str):
+        return v.strip().lower()
+    return ""
+
+def _get_cf_amount(cf: dict, which: str) -> float:
+    if which == "amount0":
+        return float(to_f(cf.get("collected_fees_token0") or cf.get("amount0") or 0.0, 0.0) or 0.0)
+    else:
+        return float(to_f(cf.get("collected_fees_token1") or cf.get("amount1") or 0.0, 0.0) or 0.0)
+
+def _iter_all_cash_flows(pos_all: list[dict]):
+    for pos in (pos_all or []):
+        for cf in (pos.get("cash_flows") or []):
+            if isinstance(cf, dict):
+                yield cf
+
+def sum_confirmed_tokens_in_window(pos_all: list[dict], start_dt, end_dt):
+    """
+    confirmed (claimed-fees / fees-collected) を USD/WETH/USDC で合算
+    窓は [start_dt, end_dt) / Noneは無制限
+    """
+    start_ts = int(start_dt.timestamp()) if start_dt else None
+    end_ts = int(end_dt.timestamp()) if end_dt else None
+
+    usd_total = 0.0
+    weth_total = 0.0
+    usdc_total = 0.0
+
+    for cf in _iter_all_cash_flows(pos_all):
+        if not _is_claimed_type(cf.get("type")):
+            continue
+
+        ts = _to_ts_sec(cf.get("ts") or cf.get("timestamp") or cf.get("time") or cf.get("created_at"))
+        if ts is None:
+            continue
+        if start_ts is not None and ts < start_ts:
+            continue
+        if end_ts is not None and ts >= end_ts:
+            continue
+
+        usd_total += float(_get_cf_usd(cf) or 0.0)
+
+        t0 = _get_cf_token_addr(cf, "token0")
+        t1 = _get_cf_token_addr(cf, "token1")
+        a0 = _get_cf_amount(cf, "amount0")
+        a1 = _get_cf_amount(cf, "amount1")
+
+        if t0 == WETH_ADDR:
+            weth_total += a0
+        elif t0 == USDC_ADDR:
+            usdc_total += a0
+
+        if t1 == WETH_ADDR:
+            weth_total += a1
+        elif t1 == USDC_ADDR:
+            usdc_total += a1
+
+    return float(usd_total), float(weth_total), float(usdc_total)
+
 
 def _get_cf_usd(cf: dict) -> float:
     """
@@ -252,6 +318,10 @@ def _get_tx_hash(cf: dict) -> str:
         or cf.get("transactionHash")
         or ""
     ).strip()
+
+def month_start_09_jst(period_end: datetime) -> datetime:
+    pe = period_end.astimezone(JST)
+    return datetime(pe.year, pe.month, 1, 9, 0, tzinfo=JST)
 
 
 # ================================
@@ -1070,10 +1140,36 @@ def compute_weekly_confirmed_metrics(
     # --- MTD ---
     mtd_rows = pick_confirmed_cf(cash_flows_all, month_start, period_end)
     mtd_confirmed = float(sum(x["usd"] for x in mtd_rows))
+    mtd_weth = 0.0
+    mtd_usdc = 0.0
+    
+    for x in mtd_rows:
+        if x.get("token0_addr", "").lower() == WETH_ADDR:
+            mtd_weth += float(x.get("amount0", 0))
+        if x.get("token1_addr", "").lower() == WETH_ADDR:
+            mtd_weth += float(x.get("amount1", 0))
+    
+        if x.get("token0_addr", "").lower() == USDC_ADDR:
+            mtd_usdc += float(x.get("amount0", 0))
+        if x.get("token1_addr", "").lower() == USDC_ADDR:
+            mtd_usdc += float(x.get("amount1", 0))
     # --- ALL ---
     all_start = datetime(2020, 1, 1, tzinfo=JST)
     all_rows = pick_confirmed_cf(cash_flows_all, all_start, period_end)
     all_confirmed = float(sum(x["usd"] for x in all_rows))
+    all_weth = 0.0
+    all_usdc = 0.0
+    
+    for x in all_rows:
+        if x.get("token0_addr", "").lower() == WETH_ADDR:
+            all_weth += float(x.get("amount0", 0))
+        if x.get("token1_addr", "").lower() == WETH_ADDR:
+            all_weth += float(x.get("amount1", 0))
+    
+        if x.get("token0_addr", "").lower() == USDC_ADDR:
+            all_usdc += float(x.get("amount0", 0))
+        if x.get("token1_addr", "").lower() == USDC_ADDR:
+            all_usdc += float(x.get("amount1", 0))
     
     dbg("DBG weekly confirmed this/prev:", week_total, prev_week_total)
     dbg("DBG weekly mtd/all:", mtd_confirmed, all_confirmed)
@@ -1086,6 +1182,10 @@ def compute_weekly_confirmed_metrics(
         prev_week_total,
         float(mtd_confirmed),
         float(all_confirmed),
+        float(mtd_weth),
+        float(mtd_usdc),
+        float(all_weth),
+        float(all_usdc),
     )
 # ================================
 # main
