@@ -1323,9 +1323,12 @@ def main():
             print(f"skip: missing telegram_chat_id name={safe_name}", flush=True)
             continue
 
-        try:
+                try:
             safe_hist = get_safe_history(all_rows, safe_address)
-            
+
+            # ================================
+            # WEEKLY
+            # ================================
             if mode == "WEEKLY":
                 (
                     pos_open, net_total, _by_nft_7d,
@@ -1333,11 +1336,8 @@ def main():
                     mtd_confirmed, all_confirmed,
                     week_weth, week_usdc,
                     mtd_weth, mtd_usdc,
-                    all_weth, all_usdc
-                ) = compute_weekly_confirmed_metrics(
-                    safe_address,
-                    period_end
-                )
+                    all_weth, all_usdc,
+                ) = compute_weekly_confirmed_metrics(safe_address, period_end)
 
                 msg = build_weekly_message(
                     safe_address=safe_address,
@@ -1354,12 +1354,16 @@ def main():
                     all_weth=all_weth,
                     all_usdc=all_usdc,
                     pos_open=pos_open,
-                 )
+                )
                 send_telegram(msg, chat_id)
                 continue
-            
+
+            # ================================
             # DAILY
-            pos_open, _pos_all, net_total, claimed_24h, unclaimed_today = compute_today_metrics(safe_address, period_end)
+            # ================================
+            pos_open, _pos_all, net_total, claimed_24h, unclaimed_today = compute_today_metrics(
+                safe_address, period_end
+            )
 
             y_unclaimed = get_yesterday_unclaimed_from_history(safe_hist)
             delta_unclaimed = unclaimed_today - y_unclaimed
