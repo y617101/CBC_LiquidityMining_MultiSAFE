@@ -260,34 +260,33 @@ for cf in cash_flows_all:
         "nft_id": nft,
         "raw": cf,
     })
-    # 重複排除（claimed優先）
-    grouped: Dict[tuple, List[dict]] = {}
-    
-        for r in rows:
-            tx = r.get("tx_hash", "") or ""
-            nft = r.get("nft_id", "") or ""
-            fallback = ""
-            raw = r.get("raw") or {}
-            fallback = str(raw.get("timestamp") or raw.get("date") or "")
-            k = (tx, nft if nft else f"__no_nft__{fallback}")
-            grouped.setdefault(k, []).append(r)
-    
-        picked: List[dict] = []
-        for _, arr in grouped.items():
-            if not arr:
-                continue
-    
-            claimed = []
-            for item in arr:
-                if _norm_cf_type(item.get("type")) == "claimed-fees":
-                    claimed.append(item)
-    
-            target = claimed if claimed else arr
-            if not target:
-                continue
-    
-            best = max(target, key=lambda item: float(item.get("usd") or 0.0))
-            picked.append(best)
+# 重複排除（claimed優先）
+grouped: Dict[tuple, List[dict]] = {}
+
+for r in rows:
+    tx = r.get("tx_hash", "") or ""
+    nft = r.get("nft_id", "") or ""
+    raw = r.get("raw") or {}
+    fallback = str(raw.get("timestamp") or raw.get("date") or "")
+    k = (tx, nft if nft else f"__no_nft__{fallback}")
+    grouped.setdefault(k, []).append(r)
+
+picked: List[dict] = []
+for _, arr in grouped.items():
+    if not arr:
+        continue
+
+    claimed = []
+    for item in arr:
+        if _norm_cf_type(item.get("type")) == "claimed-fees":
+            claimed.append(item)
+
+    target = claimed if claimed else arr
+    if not target:
+        continue
+
+    best = max(target, key=lambda item: float(item.get("usd") or 0.0))
+    picked.append(best)
     dbg("DBG pick_confirmed_cf passed/rows:", passed, len(rows))
     dbg("DBG pick_confirmed_cf grouped/picked:", len(grouped), len(picked))
         return picked
