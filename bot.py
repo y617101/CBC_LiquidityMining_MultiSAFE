@@ -1220,12 +1220,6 @@ def compute_weekly_confirmed_metrics(
         dbg("DBG week_row keys", list(week_rows[0].keys()))
         dbg("DBG week_row sample", str(week_rows[0])[:1200])
     
-    week_weth = 0.0
-    week_usdc = 0.0
-    
-    for x in week_rows:
-        if x.get("token0_addr", "").lower() == WETH_ADDR:
-            week_weth += float(x.get("amount0", 0))
         if x.get("token1_addr", "").lower() == WETH_ADDR:
             week_weth += float(x.get("amount1", 0))
     
