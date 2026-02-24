@@ -1293,16 +1293,14 @@ def compute_weekly_confirmed_metrics(
             cash_flows_all.extend(cfs)
     # --- MTD ---
     mtd_rows = pick_confirmed_cf(cash_flows_all, month_start, period_end)
-    mtd_confirmed = float(sum(x["usd"] for x in mtd_rows))
-    # --- MTD ---
+    
     mtd_confirmed = float(sum((r.get("usd") or 0.0) for r in mtd_rows))
     mtd_weth = float(sum((r.get("amount_weth") or 0.0) for r in mtd_rows))
     mtd_usdc = float(sum((r.get("amount_usdc") or 0.0) for r in mtd_rows))
     # --- ALL ---
     all_start = datetime(2020, 1, 1, tzinfo=JST)
     all_rows = pick_confirmed_cf(cash_flows_all, all_start, period_end)
-    all_confirmed = float(sum(x["usd"] for x in all_rows))
-    # --- ALL ---
+    
     all_confirmed = float(sum((r.get("usd") or 0.0) for r in all_rows))
     all_weth = float(sum((r.get("amount_weth") or 0.0) for r in all_rows))
     all_usdc = float(sum((r.get("amount_usdc") or 0.0) for r in all_rows))
