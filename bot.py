@@ -1170,7 +1170,13 @@ def compute_weekly_confirmed_metrics(
 
     pos_open = _normalize_positions(resp_open)
     pos_exited = _normalize_positions(resp_exited)
-    pos_all = pos_open + pos_exited
+    pos_all = pos_open + pos_exite
+        # --- cash_flows を安全に集める（必ず定義しておく） ---
+    cash_flows_all: List[dict] = []
+    for pos in (pos_all or []):
+        cfs = pos.get("cash_flows") or []
+        if isinstance(cfs, list):
+            cash_flows_all.extend(cfs)
 
     net_total = 0.0
     for pos in pos_open:
