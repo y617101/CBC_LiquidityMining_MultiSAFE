@@ -226,19 +226,24 @@ def pick_confirmed_cf(cash_flows, period_start: datetime, period_end: datetime) 
         })
 
     # 重複排除（claimed優先）
-    grouped: Dict[tuple, List[dict]] = {}
-    for r in rows:
-        k = (r.get("tx_hash", ""), r.get("nft_id", ""))
-        grouped.setdefault(k, []).append(r)
-
     picked: List[dict] = []
-    for _, arr in grouped.items():
-        claimed = [x for x in arr if _norm_cf_type(x.get("type")) == "claimed-fees"]
-        if claimed:
-            picked.append(max(claimed, key=lambda x: float(x.get("usd") or 0.0)))
-        else:
-            picked.append(max(arr, key=lambda x: float(x.get("usd") or 0.0)))
 
+    for _, arr in grouped.items():
+        if not arr:
+            continue
+    
+        claimed = []
+        for item in arr:
+            if _norm_cf_type(item.get("type")) == "claimed-fees":
+                claimed.append(item)
+    
+        target = claimed if claimed else arr
+    
+        if not target:
+            continue
+    
+        best = max(target, key=lambda item: float(item.get("usd") or 0.0))
+        picked.append(best)
     return picked
 
 _pick_confirmed_cf = pick_confirmed_cf
