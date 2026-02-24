@@ -260,7 +260,7 @@ for cf in cash_flows_all:
         "nft_id": nft,
         "raw": cf,
     })
-        # 重複排除（claimed優先）
+    # 重複排除（claimed優先）
     grouped: Dict[tuple, List[dict]] = {}
     
         for r in rows:
