@@ -1307,7 +1307,7 @@ def main():
                     mtd_confirmed, all_confirmed,
                     week_weth, week_usdc,
                     mtd_weth, mtd_usdc,
-                    all_weth, all_usdc
+                    all_weth, all_usdc,
                 ) = compute_weekly_confirmed_metrics(
                     safe_address,
                     period_end
