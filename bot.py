@@ -166,23 +166,52 @@ def pick_confirmed_cf(cash_flows, period_start: datetime, period_end: datetime) 
 
         txh = (_get_tx_hash(cf) or "").lower()
         nft = str(cf.get("nft_id") or cf.get("token_id") or "").strip()
-        usd = _get_cf_usd(cf)
+        # --- robust USD ---
+def _to_f(x):
+    try:
+        return float(x)
+    except Exception:
+        return 0.0
 
-        amount0 = cf.get("amount0") or cf.get("collected_fees_token0") or 0.0
-        amount1 = cf.get("amount1") or cf.get("collected_fees_token1") or 0.0
+p0 = _to_f(((cf.get("prices") or {}).get("token0") or {}).get("usd"))
+p1 = _to_f(((cf.get("prices") or {}).get("token1") or {}).get("usd"))
 
+a0 = cf.get("amount0")
+a1 = cf.get("amount1")
+
+# Revertは amount0/1 が文字列のことがある
+a0 = _to_f(a0 if a0 is not None else cf.get("collected_fees_token0"))
+a1 = _to_f(a1 if a1 is not None else cf.get("collected_fees_token1"))
+
+usd = _to_f(cf.get("usd"))
+if usd <= 0:
+    # pricesが取れるなら価格×数量でUSD換算
+    if p0 > 0 or p1 > 0:
+        usd = (a0 * p0) + (a1 * p1)
+
+
+        # --- infer WETH/USDC side by price ---
+weth_amt = 0.0
+usdc_amt = 0.0
+
+# USDCはだいたい1.0、WETHはだいたい2000付近、という前提で判定
+if p0 > 100 and 0.9 <= p1 <= 1.1:
+    # token0=WETH, token1=USDC の典型
+    weth_amt = a0
+    usdc_amt = a1
+elif p1 > 100 and 0.9 <= p0 <= 1.1:
+    # token1=WETH, token0=USDC の逆
+    weth_amt = a1
+    usdc_amt = a0
         rows.append({
             "usd": float(usd or 0.0),
-            "token0_addr": "",
-            "token1_addr": "",
-            "amount0": float(amount0),
-            "amount1": float(amount1),
+            "amount_weth": float(weth_amt or 0.0),
+            "amount_usdc": float(usdc_amt or 0.0),
             "type": cf.get("type"),
-            "tx_hash": txh,
-            "nft_id": nft,
+            "tx_hash": txh or "",
+            "nft_id": nft or "",
             "raw": cf,
         })
-
     # 重複排除（claimed優先）
     grouped = {}
     for r in rows:
@@ -1183,6 +1212,9 @@ def compute_weekly_confirmed_metrics(
     # =========================
     
     week_rows = pick_confirmed_cf(cash_flows_all, start_this, end_this)
+    week_weth = sum(r.get("amount_weth", 0.0) for r in week_rows)
+    week_usdc = sum(r.get("amount_usdc", 0.0) for r in week_rows)
+    week_total = sum(r.get("usd", 0.0) for r in week_rows)
     dbg("DBG week_rows len", len(week_rows))
     if week_rows:
         dbg("DBG week_row keys", list(week_rows[0].keys()))
