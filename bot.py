@@ -230,15 +230,14 @@ for cf in cash_flows_all:
     # ★ここが窓内判定
     if not (period_start <= dt < period_end):
         continue
-
     # ここから窓内PASS
     passed += 1
-
+    
     txh = (_get_tx_hash(cf) or "").lower().strip()
     nft = _get_nft_id(cf)  # 既にあなた側にあるならそのまま。無ければ cf.get("nft_id") 等に置換
     usd = _cf_usd(cf)      # 既にあなた側にあるならそのまま。無ければ既存の usd 算出変数に置換
     weth_amt, usdc_amt = _cf_amounts_weth_usdc(cf)  # 既存の計算結果があるならそれを使う
-
+    
     # 窓内PASS（サマリ用）※上位5件だけ
     if passed <= 5:
         dbg(
@@ -251,7 +250,7 @@ for cf in cash_flows_all:
             "weth=", weth_amt,
             "usdc=", usdc_amt,
         )
-
+        
     rows.append({
         "usd": float(usd or 0.0),
         "amount_weth": float(weth_amt or 0.0),
@@ -262,7 +261,7 @@ for cf in cash_flows_all:
         "raw": cf,
     })
         # 重複排除（claimed優先）
-        grouped: Dict[tuple, List[dict]] = {}
+    grouped: Dict[tuple, List[dict]] = {}
     
         for r in rows:
             tx = r.get("tx_hash", "") or ""
