@@ -233,28 +233,28 @@ for cf in cash_flows_all:
 
     passed += 1
             # 窓内PASS（サマリ用）
-    if passed <= 5:
-        dbg("DBG PASS sample",
-            "dt=", dt,
-            "type=", cf.get("type"),
-            "tx=", (txh[:10] if txh else ""),
-            "nft=", nft,
-            "usd=", usd)
-    txh = (_get_tx_hash(cf) or "").lower().strip()
-    # “窓内でPASSしたもの”だけ表示
-    dbg("DBG PASS", dt, cf.get("type"), "tx=", txh[:10], "usd=", usd, "weth=", weth_amt, "usdc=", usdc_amt)
+            # 窓内PASS（サマリ用）
+        if passed <= 5:
+            dbg("DBG PASS sample",
+                "dt=", dt,
+                "type=", cf.get("type"),
+                "tx=", (txh[:10] if txh else ""),
+                "nft=", nft,
+                "usd=", usd
+            )
 
-    # rows.append(...) はこの下
+        txh = (_get_tx_hash(cf) or "").lower().strip()
 
-    rows.append({
-        "usd": float(usd),
-        "amount_weth": float(weth_amt),
-        "amount_usdc": float(usdc_amt),
-        "type": cf.get("type") or "",
-        "tx_hash": txh,
-        "nft_id": nft,
-        "raw": cf,
-    })
+        # rows.append(...) はこの下
+        rows.append({
+            "usd": float(usd),
+            "amount_weth": float(weth_amt),
+            "amount_usdc": float(usdc_amt),
+            "type": cf.get("type") or "",
+            "tx_hash": txh,
+            "nft_id": nft,
+            "raw": cf,
+        })
 
         # 重複排除（claimed優先）
         grouped: Dict[tuple, List[dict]] = {}
