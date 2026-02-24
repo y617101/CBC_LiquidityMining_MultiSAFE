@@ -1231,7 +1231,7 @@ def compute_weekly_confirmed_metrics(
     # =========================
     # ここから追加
     # =========================
-    
+    dbg("DBG cash_flows_all len", len(cash_flows_all))
     week_rows = pick_confirmed_cf(cash_flows_all, start_this, end_this)
     week_weth = sum(r.get("amount_weth", 0.0) for r in week_rows)
     week_usdc = sum(r.get("amount_usdc", 0.0) for r in week_rows)
@@ -1268,37 +1268,18 @@ def compute_weekly_confirmed_metrics(
     # --- MTD ---
     mtd_rows = pick_confirmed_cf(cash_flows_all, month_start, period_end)
     mtd_confirmed = float(sum(x["usd"] for x in mtd_rows))
-    mtd_weth = 0.0
-    mtd_usdc = 0.0
-    
-    for x in mtd_rows:
-        if x.get("token0_addr", "").lower() == WETH_ADDR:
-            mtd_weth += float(x.get("amount0", 0))
-        if x.get("token1_addr", "").lower() == WETH_ADDR:
-            mtd_weth += float(x.get("amount1", 0))
-    
-        if x.get("token0_addr", "").lower() == USDC_ADDR:
-            mtd_usdc += float(x.get("amount0", 0))
-        if x.get("token1_addr", "").lower() == USDC_ADDR:
-            mtd_usdc += float(x.get("amount1", 0))
+    # --- MTD ---
+    mtd_confirmed = float(sum((r.get("usd") or 0.0) for r in mtd_rows))
+    mtd_weth = float(sum((r.get("amount_weth") or 0.0) for r in mtd_rows))
+    mtd_usdc = float(sum((r.get("amount_usdc") or 0.0) for r in mtd_rows))
     # --- ALL ---
     all_start = datetime(2020, 1, 1, tzinfo=JST)
     all_rows = pick_confirmed_cf(cash_flows_all, all_start, period_end)
     all_confirmed = float(sum(x["usd"] for x in all_rows))
-    all_weth = 0.0
-    all_usdc = 0.0
-    
-    for x in all_rows:
-        if x.get("token0_addr", "").lower() == WETH_ADDR:
-            all_weth += float(x.get("amount0", 0))
-        if x.get("token1_addr", "").lower() == WETH_ADDR:
-            all_weth += float(x.get("amount1", 0))
-    
-        if x.get("token0_addr", "").lower() == USDC_ADDR:
-            all_usdc += float(x.get("amount0", 0))
-        if x.get("token1_addr", "").lower() == USDC_ADDR:
-            all_usdc += float(x.get("amount1", 0))
-    
+    # --- ALL ---
+    all_confirmed = float(sum((r.get("usd") or 0.0) for r in all_rows))
+    all_weth = float(sum((r.get("amount_weth") or 0.0) for r in all_rows))
+    all_usdc = float(sum((r.get("amount_usdc") or 0.0) for r in all_rows))
     dbg("DBG weekly confirmed this/prev:", week_total, prev_week_total)
     dbg("DBG weekly mtd/all:", mtd_confirmed, all_confirmed)
 
