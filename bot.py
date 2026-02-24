@@ -1232,6 +1232,11 @@ def compute_weekly_confirmed_metrics(
     week_weth = sum(r.get("amount_weth", 0.0) for r in week_rows)
     week_usdc = sum(r.get("amount_usdc", 0.0) for r in week_rows)
     week_total = sum(r.get("usd", 0.0) for r in week_rows)
+    print("DBG WEEK SUM",
+      "weth=", week_weth,
+      "usdc=", week_usdc,
+      "usd=", week_total,
+      flush=True)
     
     dbg("DBG week_rows len", len(week_rows))
     if week_rows:
