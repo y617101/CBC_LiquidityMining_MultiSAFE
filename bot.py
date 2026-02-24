@@ -150,12 +150,23 @@ def pick_confirmed_cf(cash_flows, period_start: datetime, period_end: datetime) 
     confirmed = fees-collected / claimed-fees
     同一txで両方ある場合は二重計上しない（claimed-fees優先）
     窓は [period_start, period_end)
+    返却row:
+      usd, amount_weth, amount_usdc, type, tx_hash, nft_id, raw
     """
-    rows = []
+    rows: List[dict] = []
+
+    def _to_f(x) -> float:
+        try:
+            return float(x)
+        except Exception:
+            return 0.0
 
     for cf in (cash_flows or []):
-        t = _norm_cf_type(cf.get("type"))
-        if not is_claimed_type(t):
+        if not isinstance(cf, dict):
+            continue
+
+        t_norm = _norm_cf_type(cf.get("type"))
+        if not is_claimed_type(t_norm):
             continue
 
         dt = _cf_dt_jst(cf)
@@ -166,68 +177,70 @@ def pick_confirmed_cf(cash_flows, period_start: datetime, period_end: datetime) 
 
         txh = (_get_tx_hash(cf) or "").lower()
         nft = str(cf.get("nft_id") or cf.get("token_id") or "").strip()
-        # --- robust USD ---
-def _to_f(x):
-    try:
-        return float(x)
-    except Exception:
-        return 0.0
 
-p0 = _to_f(((cf.get("prices") or {}).get("token0") or {}).get("usd"))
-p1 = _to_f(((cf.get("prices") or {}).get("token1") or {}).get("usd"))
+        prices = cf.get("prices") or {}
+        p0 = _to_f(((prices.get("token0") or {}).get("usd")))
+        p1 = _to_f(((prices.get("token1") or {}).get("usd")))
 
-a0 = cf.get("amount0")
-a1 = cf.get("amount1")
+        # Revertは amount0/1 が文字列のことがある
+        a0 = cf.get("amount0")
+        a1 = cf.get("amount1")
+        a0 = _to_f(a0 if a0 is not None else cf.get("collected_fees_token0"))
+        a1 = _to_f(a1 if a1 is not None else cf.get("collected_fees_token1"))
 
-# Revertは amount0/1 が文字列のことがある
-a0 = _to_f(a0 if a0 is not None else cf.get("collected_fees_token0"))
-a1 = _to_f(a1 if a1 is not None else cf.get("collected_fees_token1"))
+        # USD（まず cf.usd を見て、ダメなら prices×amount）
+        usd = _to_f(cf.get("usd"))
+        if usd <= 0:
+            if p0 > 0 or p1 > 0:
+                usd = (a0 * p0) + (a1 * p1)
+        if usd < 0:
+            usd = 0.0
 
-usd = _to_f(cf.get("usd"))
-if usd <= 0:
-    # pricesが取れるなら価格×数量でUSD換算
-    if p0 > 0 or p1 > 0:
-        usd = (a0 * p0) + (a1 * p1)
+        # WETH/USDC 推定（USDCはだいたい1.0、WETHはだいたい100以上）
+        weth_amt = 0.0
+        usdc_amt = 0.0
+        if p0 > 100 and 0.9 <= p1 <= 1.1:
+            # token0=WETH, token1=USDC
+            weth_amt = a0
+            usdc_amt = a1
+        elif p1 > 100 and 0.9 <= p0 <= 1.1:
+            # token1=WETH, token0=USDC
+            weth_amt = a1
+            usdc_amt = a0
+        else:
+            # 例外フォールバック：価格が高い側をWETH扱い（ただしUSDCが無いケースもある）
+            if p0 >= p1:
+                weth_amt = a0
+                usdc_amt = a1
+            else:
+                weth_amt = a1
+                usdc_amt = a0
 
-
-        # --- infer WETH/USDC side by price ---
-weth_amt = 0.0
-usdc_amt = 0.0
-
-# USDCはだいたい1.0、WETHはだいたい2000付近、という前提で判定
-if p0 > 100 and 0.9 <= p1 <= 1.1:
-    # token0=WETH, token1=USDC の典型
-    weth_amt = a0
-    usdc_amt = a1
-elif p1 > 100 and 0.9 <= p0 <= 1.1:
-    # token1=WETH, token0=USDC の逆
-    weth_amt = a1
-    usdc_amt = a0
         rows.append({
-            "usd": float(usd or 0.0),
-            "amount_weth": float(weth_amt or 0.0),
-            "amount_usdc": float(usdc_amt or 0.0),
-            "type": cf.get("type"),
-            "tx_hash": txh or "",
-            "nft_id": nft or "",
+            "usd": float(usd),
+            "amount_weth": float(weth_amt),
+            "amount_usdc": float(usdc_amt),
+            "type": cf.get("type") or "",
+            "tx_hash": txh,
+            "nft_id": nft,
             "raw": cf,
         })
+
     # 重複排除（claimed優先）
-    grouped = {}
+    grouped: Dict[tuple, List[dict]] = {}
     for r in rows:
-        k = (r["tx_hash"], r["nft_id"])
+        k = (r.get("tx_hash", ""), r.get("nft_id", ""))
         grouped.setdefault(k, []).append(r)
 
-    picked = []
+    picked: List[dict] = []
     for _, arr in grouped.items():
-        claimed = [x for x in arr if x["type"] == "claimed-fees"]
+        claimed = [x for x in arr if _norm_cf_type(x.get("type")) == "claimed-fees"]
         if claimed:
-            picked.append(max(claimed, key=lambda x: x["usd"]))
+            picked.append(max(claimed, key=lambda x: float(x.get("usd") or 0.0)))
         else:
-            picked.append(max(arr, key=lambda x: x["usd"]))
+            picked.append(max(arr, key=lambda x: float(x.get("usd") or 0.0)))
 
     return picked
-
 
 _pick_confirmed_cf = pick_confirmed_cf
 
