@@ -256,8 +256,8 @@ for cf in cash_flows_all:
             "raw": cf,
         })
 
-        # 重複排除（claimed優先）
-        grouped: Dict[tuple, List[dict]] = {}
+    # 重複排除（claimed優先）
+    grouped: Dict[tuple, List[dict]] = {}
     
         for r in rows:
             tx = r.get("tx_hash", "") or ""
