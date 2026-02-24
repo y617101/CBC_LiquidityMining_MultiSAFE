@@ -246,15 +246,15 @@ for cf in cash_flows_all:
 
     # rows.append(...) はこの下
 
-        rows.append({
-            "usd": float(usd),
-            "amount_weth": float(weth_amt),
-            "amount_usdc": float(usdc_amt),
-            "type": cf.get("type") or "",
-            "tx_hash": txh,
-            "nft_id": nft,
-            "raw": cf,
-        })
+    rows.append({
+        "usd": float(usd),
+        "amount_weth": float(weth_amt),
+        "amount_usdc": float(usdc_amt),
+        "type": cf.get("type") or "",
+        "tx_hash": txh,
+        "nft_id": nft,
+        "raw": cf,
+    })
 
         # 重複排除（claimed優先）
         grouped: Dict[tuple, List[dict]] = {}
