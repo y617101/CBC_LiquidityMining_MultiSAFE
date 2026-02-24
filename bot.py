@@ -1308,10 +1308,6 @@ def main():
                     week_weth, week_usdc,
                     mtd_weth, mtd_usdc,
                     all_weth, all_usdc,
-                ) = compute_weekly_confirmed_metrics(
-                    safe_address,
-                    period_end
-                )
             
                 msg = build_weekly_message(
                     safe_address=safe_address,
