@@ -289,7 +289,7 @@ for _, arr in grouped.items():
     picked.append(best)
     dbg("DBG pick_confirmed_cf passed/rows:", passed, len(rows))
     dbg("DBG pick_confirmed_cf grouped/picked:", len(grouped), len(picked))
-        return picked
+    return picked
 _pick_confirmed_cf = pick_confirmed_cf
 
 # ================================
