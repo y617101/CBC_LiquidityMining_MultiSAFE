@@ -1297,6 +1297,12 @@ def main():
                     prev_week_claimed=prev_week_claimed,
                     mtd_confirmed=mtd_confirmed,
                     all_confirmed=all_confirmed,
+                    week_weth=0.0,
+                    week_usdc=0.0,
+                    mtd_weth=0.0,
+                    mtd_usdc=0.0,
+                    all_weth=0.0,
+                    all_usdc=0.0,
                     pos_open=pos_open,
                 )
                 send_telegram(msg, chat_id)
