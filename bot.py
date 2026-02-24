@@ -145,6 +145,8 @@ def _cf_dt_jst(cf: dict) -> Optional[datetime]:
         return None
     return datetime.fromtimestamp(int(ts_sec), tz=JST)
 
+from typing import Dict, List, Tuple
+
 def pick_confirmed_cf(cash_flows, period_start: datetime, period_end: datetime) -> List[dict]:
     """
     confirmed = fees-collected / claimed-fees
@@ -161,6 +163,11 @@ def pick_confirmed_cf(cash_flows, period_start: datetime, period_end: datetime) 
         except Exception:
             return 0.0
 
+    # 期間情報（関数内で1回だけ）
+    dbg("DBG pick_confirmed_cf window JST:", period_start, period_end)
+
+    passed = 0
+
     for cf in (cash_flows or []):
         if not isinstance(cf, dict):
             continue
@@ -175,8 +182,11 @@ def pick_confirmed_cf(cash_flows, period_start: datetime, period_end: datetime) 
         if not (period_start <= dt < period_end):
             continue
 
-        txh = (_get_tx_hash(cf) or "").lower()
+        passed += 1
+
+        txh = (_get_tx_hash(cf) or "").lower().strip()
         nft = str(cf.get("nft_id") or cf.get("token_id") or cf.get("_pos_nft_id") or "").strip()
+
         prices = cf.get("prices") or {}
         p0 = _to_f(((prices.get("token0") or {}).get("usd")))
         p1 = _to_f(((prices.get("token1") or {}).get("usd")))
@@ -207,6 +217,7 @@ def pick_confirmed_cf(cash_flows, period_start: datetime, period_end: datetime) 
             weth_amt = a1
             usdc_amt = a0
         else:
+            # price欠損などのfallback（推定）
             if p0 >= p1:
                 weth_amt = a0
                 usdc_amt = a1
@@ -214,82 +225,64 @@ def pick_confirmed_cf(cash_flows, period_start: datetime, period_end: datetime) 
                 weth_amt = a1
                 usdc_amt = a0
 
-        # 期間情報（関数冒頭に1回）
-dbg("DBG pick_confirmed_cf window JST:", period_start, period_end)
+        # 窓内PASS（サマリ用）※上位5件だけ
+        if passed <= 5:
+            dbg(
+                "DBG PASS sample",
+                "dt=", dt,
+                "type=", cf.get("type"),
+                "tx=", (txh[:10] if txh else ""),
+                "nft=", nft,
+                "usd=", usd,
+                "weth=", weth_amt,
+                "usdc=", usdc_amt,
+            )
 
-passed = 0
-for cf in cash_flows_all:
-    # typeフィルタ
-    if not _is_claimed_type(cf.get("type")):
-        continue
+        rows.append({
+            "usd": float(usd or 0.0),
+            "amount_weth": float(weth_amt or 0.0),
+            "amount_usdc": float(usdc_amt or 0.0),
+            "type": cf.get("type") or "",
+            "tx_hash": txh,
+            "nft_id": nft,
+            "raw": cf,
+        })
 
-    dt = _cf_dt_jst(cf)
-    if not dt:
-        continue
+    # 重複排除（claimed優先）: (tx_hash, nft_id) 単位でまとめる
+    grouped: Dict[Tuple[str, str], List[dict]] = {}
 
-    # ★ここが窓内判定
-    if not (period_start <= dt < period_end):
-        continue
-    # ここから窓内PASS
-    passed += 1
-    
-    txh = (_get_tx_hash(cf) or "").lower().strip()
-    nft = _get_nft_id(cf)  # 既にあなた側にあるならそのまま。無ければ cf.get("nft_id") 等に置換
-    usd = _cf_usd(cf)      # 既にあなた側にあるならそのまま。無ければ既存の usd 算出変数に置換
-    weth_amt, usdc_amt = _cf_amounts_weth_usdc(cf)  # 既存の計算結果があるならそれを使う
-    
-    # 窓内PASS（サマリ用）※上位5件だけ
-    if passed <= 5:
-        dbg(
-            "DBG PASS sample",
-            "dt=", dt,
-            "type=", cf.get("type"),
-            "tx=", (txh[:10] if txh else ""),
-            "nft=", nft,
-            "usd=", usd,
-            "weth=", weth_amt,
-            "usdc=", usdc_amt,
-        )
-        
-    rows.append({
-        "usd": float(usd or 0.0),
-        "amount_weth": float(weth_amt or 0.0),
-        "amount_usdc": float(usdc_amt or 0.0),
-        "type": cf.get("type") or "",
-        "tx_hash": txh,
-        "nft_id": nft,
-        "raw": cf,
-    })
-# 重複排除（claimed優先）
-grouped: Dict[tuple, List[dict]] = {}
+    for r in rows:
+        tx = (r.get("tx_hash") or "").strip()
+        nft_id = (r.get("nft_id") or "").strip()
 
-for r in rows:
-    tx = r.get("tx_hash", "") or ""
-    nft = r.get("nft_id", "") or ""
-    raw = r.get("raw") or {}
-    fallback = str(raw.get("timestamp") or raw.get("date") or "")
-    k = (tx, nft if nft else f"__no_nft__{fallback}")
-    grouped.setdefault(k, []).append(r)
+        raw = r.get("raw") or {}
+        fallback = str(raw.get("timestamp") or raw.get("date") or "")
 
-picked: List[dict] = []
-for _, arr in grouped.items():
-    if not arr:
-        continue
+        # tx_hashが無い場合のfallback（衝突回避の最低限）
+        if not tx:
+            tx = f"__no_tx__{fallback}"
 
-    claimed = []
-    for item in arr:
-        if _norm_cf_type(item.get("type")) == "claimed-fees":
-            claimed.append(item)
+        k = (tx, nft_id if nft_id else "__no_nft__")
+        grouped.setdefault(k, []).append(r)
 
-    target = claimed if claimed else arr
-    if not target:
-        continue
+    picked: List[dict] = []
+    for _, arr in grouped.items():
+        if not arr:
+            continue
 
-    best = max(target, key=lambda item: float(item.get("usd") or 0.0))
-    picked.append(best)
+        claimed = [item for item in arr if _norm_cf_type(item.get("type")) == "claimed-fees"]
+        target = claimed if claimed else arr
+        if not target:
+            continue
+
+        best = max(target, key=lambda item: float(item.get("usd") or 0.0))
+        picked.append(best)
+
     dbg("DBG pick_confirmed_cf passed/rows:", passed, len(rows))
     dbg("DBG pick_confirmed_cf grouped/picked:", len(grouped), len(picked))
+
     return picked
+
 _pick_confirmed_cf = pick_confirmed_cf
 
 # ================================
