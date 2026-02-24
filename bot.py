@@ -281,6 +281,11 @@ def pick_confirmed_cf(cash_flows, period_start: datetime, period_end: datetime) 
     dbg("DBG pick_confirmed_cf passed/rows:", passed, len(rows))
     dbg("DBG pick_confirmed_cf grouped/picked:", len(grouped), len(picked))
 
+    # DEBUG: picked合計（WETH/USDC）を確認
+    total_weth = sum(float(r.get("amount_weth") or 0.0) for r in picked)
+    total_usdc = sum(float(r.get("amount_usdc") or 0.0) for r in picked)
+    dbg("DEBUG FINAL SUM WETH:", total_weth)
+    dbg("DEBUG FINAL SUM USDC:", total_usdc)
     return picked
 
 _pick_confirmed_cf = pick_confirmed_cf
