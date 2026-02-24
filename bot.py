@@ -208,7 +208,6 @@ def pick_confirmed_cf(cash_flows, period_start: datetime, period_end: datetime) 
             weth_amt = a1
             usdc_amt = a0
         else:
-            # 例外フォールバック：価格が高い側をWETH扱い（ただしUSDCが無いケースもある）
             if p0 >= p1:
                 weth_amt = a0
                 usdc_amt = a1
