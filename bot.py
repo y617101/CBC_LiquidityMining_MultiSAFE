@@ -169,27 +169,12 @@ def pick_confirmed_cf(cash_flows, period_start: datetime, period_end: datetime) 
     rows = []
 
     # ✅ ここに置く（for の外）
-    def _norm_confirmed_row(cf: dict) -> dict:
-        def _f(x, default=0.0):
-            try:
-                return float(x)
-            except Exception:
-                return default
-
-        usd = cf.get("usd")
-        if usd is None:
-            usd = (
-                cf.get("usd_value")
-                or cf.get("value_usd")
-                or cf.get("amount_usd")
-                or 0.0
-            )
-
-        token0 = (cf.get("token0_addr") or cf.get("token0") or "").lower()
-        token1 = (cf.get("token1_addr") or cf.get("token1") or "").lower()
-
+        def _norm_confirmed_row(cf: dict, txh: str, nft: str, usd_val: float) -> dict:
+        # token0/1 addr はrawに無いことが多いので空でもOK（amountは拾う）
         amount0 = cf.get("amount0")
         amount1 = cf.get("amount1")
+
+        # amount0/1 が無い場合の保険（amounts: [a0, a1] 形式）
         if amount0 is None or amount1 is None:
             amts = cf.get("amounts")
             if isinstance(amts, (list, tuple)) and len(amts) >= 2:
@@ -198,18 +183,18 @@ def pick_confirmed_cf(cash_flows, period_start: datetime, period_end: datetime) 
                 if amount1 is None:
                     amount1 = amts[1]
 
+        # ここが最重要：usd は cf から取らず “計算済み” を使う
         return {
-            "usd": _f(usd),
-            "token0_addr": token0,
-            "token1_addr": token1,
-            "amount0": _f(amount0),
-            "amount1": _f(amount1),
+            "usd": float(usd_val or 0.0),
+            "token0_addr": (cf.get("token0_addr") or "").lower(),
+            "token1_addr": (cf.get("token1_addr") or "").lower(),
+            "amount0": float(amount0 or 0.0),
+            "amount1": float(amount1 or 0.0),
             "type": cf.get("type"),
-            "tx_hash": (cf.get("tx_hash") or cf.get("tx") or ""),
-            "nft_id": str(cf.get("nft_id") or cf.get("token_id") or ""),
+            "tx_hash": txh or "",
+            "nft_id": nft or "",
             "raw": cf,
         }
-
     # ✅ ここから下は今のロジックのまま
     for cf in (cash_flows or []):
         t = _norm_cf_type(cf.get("type"))
@@ -224,7 +209,7 @@ def pick_confirmed_cf(cash_flows, period_start: datetime, period_end: datetime) 
             continue
 
         # ✅ append はここ（for の中）
-        rows.append(_norm_confirmed_row(cf))
+        rows.append(_norm_confirmed_row(cf, txh, nft, usd))
 
     # 同一tx + nft は1回だけにする（claimed-fees優先）
     grouped = {}
