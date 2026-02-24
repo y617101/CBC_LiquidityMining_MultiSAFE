@@ -153,35 +153,6 @@ def pick_confirmed_cf(cash_flows, period_start: datetime, period_end: datetime) 
     """
     rows = []
 
-    # ✅ for の外（rows=[] と同じインデント）に置く
-    def _norm_confirmed_row(cf: dict, txh: str, nft: str, usd_val: float) -> dict:
-        # token0/1 addr はrawに無いことが多いので空でもOK（amountは拾う）
-        amount0 = cf.get("amount0")
-        amount1 = cf.get("amount1")
-
-        # amount0/1 が無い場合の保険（amounts: [a0, a1] 形式）
-        if amount0 is None or amount1 is None:
-            amts = cf.get("amounts")
-            if isinstance(amts, (list, tuple)) and len(amts) >= 2:
-                if amount0 is None:
-                    amount0 = amts[0]
-                if amount1 is None:
-                    amount1 = amts[1]
-
-        # ✅ usd は cf から取らず “計算済み” を使う
-        return {
-            "usd": float(usd_val or 0.0),
-            "token0_addr": (cf.get("token0_addr") or "").lower(),
-            "token1_addr": (cf.get("token1_addr") or "").lower(),
-            "amount0": float(amount0 or 0.0),
-            "amount1": float(amount1 or 0.0),
-            "type": cf.get("type"),
-            "tx_hash": txh or "",
-            "nft_id": nft or "",
-            "raw": cf,
-        }
-
-    # ✅ ここから下はロジック本体
     for cf in (cash_flows or []):
         t = _norm_cf_type(cf.get("type"))
         if not is_claimed_type(t):
@@ -193,14 +164,26 @@ def pick_confirmed_cf(cash_flows, period_start: datetime, period_end: datetime) 
         if not (period_start <= dt < period_end):
             continue
 
-        # ✅ ここで txh/nft/usd を必ず定義する
         txh = (_get_tx_hash(cf) or "").lower()
-        nft = str(cf.get("nft_id") or cf.get("token_id") or cf.get("tokenId") or "").strip()
+        nft = str(cf.get("nft_id") or cf.get("token_id") or "").strip()
         usd = _get_cf_usd(cf)
 
-        rows.append(_norm_confirmed_row(cf, txh, nft, usd))
+        amount0 = cf.get("amount0") or cf.get("collected_fees_token0") or 0.0
+        amount1 = cf.get("amount1") or cf.get("collected_fees_token1") or 0.0
 
-    # 同一tx + nft は1回だけにする（claimed-fees優先）
+        rows.append({
+            "usd": float(usd or 0.0),
+            "token0_addr": "",
+            "token1_addr": "",
+            "amount0": float(amount0),
+            "amount1": float(amount1),
+            "type": cf.get("type"),
+            "tx_hash": txh,
+            "nft_id": nft,
+            "raw": cf,
+        })
+
+    # 重複排除（claimed優先）
     grouped = {}
     for r in rows:
         k = (r["tx_hash"], r["nft_id"])
@@ -217,7 +200,6 @@ def pick_confirmed_cf(cash_flows, period_start: datetime, period_end: datetime) 
     return picked
 
 
-# compatibility alias (old/new name)
 _pick_confirmed_cf = pick_confirmed_cf
 
 # ================================
