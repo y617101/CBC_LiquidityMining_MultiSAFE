@@ -168,6 +168,49 @@ def pick_confirmed_cf(cash_flows, period_start: datetime, period_end: datetime) 
     """
     rows = []
 
+    # ✅ ここに置く（for の外）
+    def _norm_confirmed_row(cf: dict) -> dict:
+        def _f(x, default=0.0):
+            try:
+                return float(x)
+            except Exception:
+                return default
+
+        usd = cf.get("usd")
+        if usd is None:
+            usd = (
+                cf.get("usd_value")
+                or cf.get("value_usd")
+                or cf.get("amount_usd")
+                or 0.0
+            )
+
+        token0 = (cf.get("token0_addr") or cf.get("token0") or "").lower()
+        token1 = (cf.get("token1_addr") or cf.get("token1") or "").lower()
+
+        amount0 = cf.get("amount0")
+        amount1 = cf.get("amount1")
+        if amount0 is None or amount1 is None:
+            amts = cf.get("amounts")
+            if isinstance(amts, (list, tuple)) and len(amts) >= 2:
+                if amount0 is None:
+                    amount0 = amts[0]
+                if amount1 is None:
+                    amount1 = amts[1]
+
+        return {
+            "usd": _f(usd),
+            "token0_addr": token0,
+            "token1_addr": token1,
+            "amount0": _f(amount0),
+            "amount1": _f(amount1),
+            "type": cf.get("type"),
+            "tx_hash": (cf.get("tx_hash") or cf.get("tx") or ""),
+            "nft_id": str(cf.get("nft_id") or cf.get("token_id") or ""),
+            "raw": cf,
+        }
+
+    # ✅ ここから下は今のロジックのまま
     for cf in (cash_flows or []):
         t = _norm_cf_type(cf.get("type"))
         if not is_claimed_type(t):
@@ -176,63 +219,12 @@ def pick_confirmed_cf(cash_flows, period_start: datetime, period_end: datetime) 
         dt = _cf_dt_jst(cf)
         if not dt:
             continue
+
         if not (period_start <= dt < period_end):
             continue
 
-        txh = _get_tx_hash(cf).lower()
-        nft = str(cf.get("nft_id") or cf.get("token_id") or cf.get("tokenId") or "").strip()
-        usd = _get_cf_usd(cf)
-
-def _norm_confirmed_row(cf: dict) -> dict:
-    def _f(x, default=0.0):
-        try:
-            return float(x)
-        except Exception:
-            return default
-
-    usd = cf.get("usd")
-    if usd is None:
-        usd = (
-            cf.get("usd_value")
-            or cf.get("value_usd")
-            or cf.get("amount_usd")
-            or 0.0
-        )
-
-    token0 = (cf.get("token0_addr") or cf.get("token0") or "").lower()
-    token1 = (cf.get("token1_addr") or cf.get("token1") or "").lower()
-
-    if not token0:
-        token0 = WETH_ADDR
-    if not token1:
-        token1 = USDC_ADDR
-
-    amount0 = cf.get("amount0")
-    amount1 = cf.get("amount1")
-
-    if amount0 is None:
-        amount0 = cf.get("amount")
-    if amount1 is None:
-        amount1 = cf.get("amount1")
-
-    amts = cf.get("amounts")
-    if isinstance(amts, (list, tuple)) and len(amts) >= 2:
-        if amount0 is None:
-            amount0 = amts[0]
-        if amount1 is None:
-            amount1 = amts[1]
-
-    return {
-        "usd": _f(usd),
-        "token0_addr": token0,
-        "token1_addr": token1,
-        "amount0": _f(amount0),
-        "amount1": _f(amount1),
-        "type": cf.get("type"),
-        "tx_hash": cf.get("tx_hash") or cf.get("tx") or "",
-        "nft_id": str(cf.get("nft_id") or cf.get("token_id") or ""),
-        "raw": cf,
-    }
+        # ✅ append はここ（for の中）
+        rows.append(_norm_confirmed_row(cf))
 
     # 同一tx + nft は1回だけにする（claimed-fees優先）
     grouped = {}
@@ -249,7 +241,6 @@ def _norm_confirmed_row(cf: dict) -> dict:
             picked.append(max(arr, key=lambda x: x["usd"]))
 
     return picked
-
 # compatibility alias (old/new name)
 _pick_confirmed_cf = pick_confirmed_cf
 
