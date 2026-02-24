@@ -183,14 +183,53 @@ def pick_confirmed_cf(cash_flows, period_start: datetime, period_end: datetime) 
         nft = str(cf.get("nft_id") or cf.get("token_id") or cf.get("tokenId") or "").strip()
         usd = _get_cf_usd(cf)
 
-        rows.append({
-            "type": t,
-            "dt_jst": dt,
-            "tx_hash": txh,
-            "nft_id": nft,
-            "usd": float(usd or 0.0),
-            "raw": cf,
-        })
+        def _norm_confirmed_row(cf: dict) -> dict:
+    def _addr(x):
+        if isinstance(x, str):
+            return x
+        if isinstance(x, dict):
+            return x.get("address") or x.get("token_address") or x.get("id") or ""
+        return ""
+
+    def _f(x, default=0.0):
+        try:
+            return float(x)
+        except Exception:
+            return default
+
+    usd = _f(
+        cf.get("usd")
+        or cf.get("usd_value")
+        or cf.get("value_usd")
+        or cf.get("amount_usd")
+        or 0.0
+    )
+
+    token0 = _addr(cf.get("token0") or cf.get("token0_addr"))
+    token1 = _addr(cf.get("token1") or cf.get("token1_addr"))
+
+    amount0 = cf.get("amount0")
+    amount1 = cf.get("amount1")
+
+    if amount0 is None or amount1 is None:
+        amts = cf.get("amounts")
+        if isinstance(amts, (list, tuple)) and len(amts) >= 2:
+            if amount0 is None:
+                amount0 = amts[0]
+            if amount1 is None:
+                amount1 = amts[1]
+
+    return {
+        "usd": _f(usd),
+        "token0_addr": (token0 or "").lower(),
+        "token1_addr": (token1 or "").lower(),
+        "amount0": _f(amount0),
+        "amount1": _f(amount1),
+        "type": cf.get("type"),
+        "tx_hash": cf.get("tx_hash") or cf.get("tx") or "",
+        "nft_id": str(cf.get("nft_id") or cf.get("token_id") or ""),
+    }
+        rows.append(_norm_confirmed_row(cf))
 
     # 同一tx + nft は1回だけにする（claimed-fees優先）
     grouped = {}
@@ -1193,6 +1232,10 @@ def compute_weekly_confirmed_metrics(
     # =========================
     
     week_rows = pick_confirmed_cf(cash_flows_all, start_this, end_this)
+    dbg("DBG week_rows len", len(week_rows))
+    if week_rows:
+        dbg("DBG week_row keys", list(week_rows[0].keys()))
+        dbg("DBG week_row sample", str(week_rows[0])[:1200])
     
     week_weth = 0.0
     week_usdc = 0.0
