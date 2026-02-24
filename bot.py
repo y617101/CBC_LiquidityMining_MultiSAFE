@@ -208,6 +208,9 @@ def pick_confirmed_cf(cash_flows, period_start: datetime, period_end: datetime) 
 
     return picked
 
+# compatibility alias (old/new name)
+_pick_confirmed_cf = pick_confirmed_cf
+
 
 # ================================
 # Constants
