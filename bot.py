@@ -965,41 +965,65 @@ def build_daily_message(
     safe_address: str,
     period_end: datetime,
     net_total: float,
-    emitted_today: float,
+    emitted_today: float,  # ←互換のため残す（この関数内では使わない）
     history: List[List[str]],
     pos_open: List[dict],
 ) -> str:
-    emitted_7d = sum_last_n_days(history, 7, 6)
-    avg_emitted_7d = emitted_7d / 7.0 if emitted_7d > 0 else 0.0
+    # --------------------------------
+    # ① 「現在DEX手数料収益（Value）」＝ uncollected現在値（positionsの現在値合算）
+    #    ※ Revert Positions API では fees_value が未回収USD相当として入っていることが多い
+    # --------------------------------
+    uncollected_now_value = 0.0
+    for p in (pos_open or []):
+        try:
+            # fees_value を優先、無ければ uncollected_fees_value 等へフォールバック
+            if p.get("fees_value") is not None:
+                uncollected_now_value += float(p.get("fees_value") or 0.0)
+            elif p.get("uncollected_fees_value") is not None:
+                uncollected_now_value += float(p.get("uncollected_fees_value") or 0.0)
+        except Exception:
+            pass
 
-    mtd_emitted = sum_month_to_date(history, period_end, 6)
+    # --------------------------------
+    # ② 7日平均 / MTD は「confirmedのみ」で計算
+    #    あなたのシート構造（推定）:
+    #    [period_end, safe_name, safe_address, net_total, claimed_24h, unclaimed, emitted]
+    #                          index:    0         1        2         3         4        5      6
+    #    → confirmedは claimed_24h（index=4）を使う
+    # --------------------------------
+    CONFIRMED_COL = 4
+
+    confirmed_7d = sum_last_n_days(history, 7, CONFIRMED_COL)
+    avg_confirmed_7d = confirmed_7d / 7.0 if confirmed_7d > 0 else 0.0
+
+    mtd_confirmed = sum_month_to_date(history, period_end, CONFIRMED_COL)
+
+    # --------------------------------
+    # ③ APR（直近7日平均）＝ confirmedのみ（安定版）
+    #    APR = (avg_confirmed_7d / net_total) * 365
+    # --------------------------------
+    apr_7d = (avg_confirmed_7d / net_total) * 365.0 * 100.0 if net_total > 0 else 0.0
+
     safe_link = fmt_safe_link(safe_address)
-
-    safe_apr = safe_apr_weighted(pos_open)
-    nft_lines = build_nft_lines_revert_apr(pos_open)
 
     msg = (
         "🚀 CBC Liquidity Mining — Daily\n"
         f"Period End: {period_end.strftime('%Y-%m-%d %H:%M')} JST\n"
         f"SAFE {safe_link}\n"
         "────────────────\n\n"
-        "🗓 今月累計DEX手数料収益\n"
-        f"+{fmt_money(mtd_emitted)}\n\n"
-        "📈 推定戦略 APR（直近7日平均）\n"
-        f"{fmt_pct(safe_apr)}\n\n"
+        "🗓 現在DEX手数料収益（Value）\n"
+        f"{fmt_money(uncollected_now_value)}\n\n"
+        "📈 推定戦略APR（直近7日平均）\n"
+        f"{fmt_pct(apr_7d)}\n\n"
         "🔒 現在Net運用額\n"
         f"{fmt_money(net_total)}\n\n"
         "────────────────\n"
-        "🎉 当日DEX手数料収益\n"
-        f"{fmt_money(emitted_today)}\n\n"
-        "📆 1日あたりDEX手数料収益（直近7日平均）\n"
-        f"{fmt_money(avg_emitted_7d)}\n\n"
-        "📊 NFT Positions\n"
-        + ("\n".join(nft_lines) if nft_lines else "—")
-        + "\n"
+        "🎉 月間累計 確定DEX手数料収益\n"
+        f"{fmt_money(mtd_confirmed)}（Value）\n\n"
+        "📆 1日あたり確定DEX手数料収益（直近7日平均）\n"
+        f"{fmt_money(avg_confirmed_7d)}\n"
     )
     return msg
-
 
 def build_weekly_message(
     safe_address: str,
@@ -1009,8 +1033,17 @@ def build_weekly_message(
     prev_week_claimed: float,
     mtd_confirmed: float,
     all_confirmed: float,
-    pos_open: List[dict],
+    # 追加：枚数（無ければ 0.0 を渡せばOK）
+    week_weth: float = 0.0,
+    week_usdc: float = 0.0,
+    mtd_weth: float = 0.0,
+    mtd_usdc: float = 0.0,
+    all_weth: float = 0.0,
+    all_usdc: float = 0.0,
+    pos_open: List[dict] = None,
 ) -> str:
+    pos_open = pos_open or []
+
     avg_claimed_day = week_claimed / 7.0 if week_claimed > 0 else 0.0
 
     wow_txt = "—"
@@ -1020,8 +1053,11 @@ def build_weekly_message(
         wow_txt = f"{sign}{wow:.1f}%"
 
     safe_link = fmt_safe_link(safe_address)
-    safe_apr = safe_apr_weighted(pos_open)
 
+    # APRは confirmed-only に寄せる（安定）
+    apr_7d = (avg_claimed_day / net_total) * 365.0 * 100.0 if net_total > 0 else 0.0
+
+    # NFT linesはそのまま（見やすいなら残す）
     nft_lines = build_nft_lines_revert_apr(pos_open)
 
     msg = (
@@ -1029,20 +1065,24 @@ def build_weekly_message(
         f"Period End: {period_end.strftime('%Y-%m-%d %H:%M')} JST\n"
         f"SAFE {safe_link}\n"
         "────────────────\n\n"
-        "🎉 今週確定収益\n"
+        "🎉 今週 確定DEX手数料収益（FIX）\n"
+        f"{week_weth:.6f} ETH\n"
+        f"{week_usdc:,.2f} USDC\n"
         f"{fmt_money(week_claimed)}\n"
         f"（前週 {fmt_money(prev_week_claimed)} ／ {wow_txt}）\n\n"
-        "📆 1日あたり平均確定収益\n"
+        "📆 1日あたり平均確定手数料収益\n"
         f"{fmt_money(avg_claimed_day)}\n\n"
         "🔒 現在Net運用額\n"
         f"{fmt_money(net_total)}\n\n"
         "────────────────\n"
         "📈 推定戦略 APR（直近7日平均）\n"
-        f"{fmt_pct(safe_apr)}\n\n"
-        "🗓 今月累計DEX手数料収益\n"
-        f"+{fmt_money(mtd_confirmed)}\n\n"
-        "🏆 ALL-TIME DEX手数料収益\n"
-        f"+{fmt_money(all_confirmed)}\n\n"
+        f"{fmt_pct(apr_7d)}\n\n"
+        "🗓 今月累計 確定DEX手数料収益\n"
+        f"{mtd_weth:.6f} ETH  {mtd_usdc:,.2f} USDC\n"
+        f"{fmt_money(mtd_confirmed)}\n\n"
+        "🏆 ALL-TIME 確定手数料収益\n"
+        f"{all_weth:.6f} ETH  {all_usdc:,.2f} USDC\n"
+        f"{fmt_money(all_confirmed)}\n\n"
         "────────────────\n"
         "📊 NFT Positions\n"
         + ("\n".join(nft_lines) if nft_lines else "—")
