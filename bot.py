@@ -104,50 +104,35 @@ def sum_confirmed_tokens_in_window(pos_all: list[dict], start_dt, end_dt):
 
 
 def _get_cf_usd(cf: dict) -> float:
-    """
-    Revert Positions API cash_flows:
-    - direct USD keys may be absent
-    - compute USD from collected fees + prices.token0.usd / prices.token1.usd
-    """
+    # 既存：usd / usd_value / value_usd / amount_usd ... を拾う処理
+    # （ここはそのまま）
 
-    # direct USD fields (if present)
-    for k in (
-        "usd",
-        "amount_usd", "amountUsd", "amountUSD",
-        "value_usd", "valueUsd",
-        "usd_value", "usdValue",
-        "hodl_value_usd", "hodlValueUsd",
-        "hodl_value", "hodlValue",
-    ):
-        v = cf.get(k)
-        if v not in (None, ""):
-            try:
-                return float(v)
-            except Exception:
-                pass
-
-    prices = cf.get("prices") or {}
-    if not isinstance(prices, dict):
-        prices = {}
-
-    p0 = prices.get("token0") or {}
-    p1 = prices.get("token1") or {}
-
-    try:
-        usd0 = float((p0 or {}).get("usd") or 0.0)
-    except Exception:
-        usd0 = 0.0
-    try:
-        usd1 = float((p1 or {}).get("usd") or 0.0)
-    except Exception:
-        usd1 = 0.0
-
-    def _to_float(x):
+    def _f(x, default=0.0):
         try:
             return float(x)
         except Exception:
-            return 0.0
+            return default
 
+    # ここから追加：prices × amount でUSDを復元する（claimed-fees対策）
+    prices = cf.get("prices") or {}
+    p0 = _f(((prices.get("token0") or {}).get("usd")), 0.0)
+    p1 = _f(((prices.get("token1") or {}).get("usd")), 0.0)
+
+    # amount0/1 が無い形もあるので collected_fees_token0/1 も見る
+    a0 = cf.get("amount0")
+    a1 = cf.get("amount1")
+    if a0 is None:
+        a0 = cf.get("collected_fees_token0")
+    if a1 is None:
+        a1 = cf.get("collected_fees_token1")
+
+    a0 = _f(a0, 0.0)
+    a1 = _f(a1, 0.0)
+
+    if (p0 > 0 or p1 > 0) and (a0 != 0.0 or a1 != 0.0):
+        return max(0.0, a0 * p0 + a1 * p1)
+
+    return 0.0
     amt0 = _to_float(cf.get("collected_fees_token0") or cf.get("amount0") or 0.0)
     amt1 = _to_float(cf.get("collected_fees_token1") or cf.get("amount1") or 0.0)
 
