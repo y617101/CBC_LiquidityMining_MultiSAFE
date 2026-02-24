@@ -233,6 +233,14 @@ for cf in cash_flows_all:
         continue
 
     passed += 1
+            # 窓内PASS（サマリ用）
+    if passed <= 5:
+        dbg("DBG PASS sample",
+            "dt=", dt,
+            "type=", cf.get("type"),
+            "tx=", (txh[:10] if txh else ""),
+            "nft=", nft,
+            "usd=", usd)
     txh = (_get_tx_hash(cf) or "").lower().strip()
     # “窓内でPASSしたもの”だけ表示
     dbg("DBG PASS", dt, cf.get("type"), "tx=", txh[:10], "usd=", usd, "weth=", weth_amt, "usdc=", usdc_amt)
