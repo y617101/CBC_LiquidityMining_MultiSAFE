@@ -1182,6 +1182,30 @@ def compute_weekly_confirmed_metrics(
     week_total = float(sum((confirmed_by_nft_7d or {}).values()))
     prev_week_total = float(sum((confirmed_by_nft_prev or {}).values()))
     
+    # =========================
+    # ここから追加
+    # =========================
+    
+    week_rows = pick_confirmed_cf(cash_flows_all, start_this, end_this)
+    
+    week_weth = 0.0
+    week_usdc = 0.0
+    
+    for x in week_rows:
+        if x.get("token0_addr", "").lower() == WETH_ADDR:
+            week_weth += float(x.get("amount0", 0))
+        if x.get("token1_addr", "").lower() == WETH_ADDR:
+            week_weth += float(x.get("amount1", 0))
+    
+        if x.get("token0_addr", "").lower() == USDC_ADDR:
+            week_usdc += float(x.get("amount0", 0))
+        if x.get("token1_addr", "").lower() == USDC_ADDR:
+            week_usdc += float(x.get("amount1", 0))
+
+# =========================
+# 追加ここまで
+# =========================
+    
     # --- MTD / ALL confirmed (period_end基準で統一) ---
     month_start = datetime(
         period_end.astimezone(JST).year,
@@ -1237,10 +1261,12 @@ def compute_weekly_confirmed_metrics(
         pos_open,
         float(net_total),
         confirmed_by_nft_7d,
-        week_total,
-        prev_week_total,
+        float(week_total),
+        float(prev_week_total),
         float(mtd_confirmed),
         float(all_confirmed),
+        float(week_weth),
+        float(week_usdc),
         float(mtd_weth),
         float(mtd_usdc),
         float(all_weth),
