@@ -1104,7 +1104,8 @@ def build_nft_lines_revert_apr(pos_open: List[dict]) -> List[str]:
         nft_link = f'<a href="{h(url)}">{h(nft_id)}</a>'
 
         lines.append(
-            f"{nft_link} | {h(status)} | Net {fmt_money(net)} | APR {fmt_pct(apr)}"
+            f"{nft_link} | {h(status)}\n"
+            f"Net {fmt_money(net)} | APR {fmt_pct(apr)}"
         )
     return lines
 
