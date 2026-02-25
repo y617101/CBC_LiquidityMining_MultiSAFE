@@ -1161,7 +1161,7 @@ def build_daily_message(
         f"{fmt_money(avg_confirmed_7d_usd)}\n\n"
         "──────────\n"
         "📊 NFT Positions\n"
-        + ("\n".join(nft_lines) if nft_lines else "—")
+        + ("\n\n".join(nft_lines) if nft_lines else "—")
         + "\n"
     )
     return msg
@@ -1226,7 +1226,7 @@ def build_weekly_message(
         f"{fmt_money(all_confirmed)}\n\n"
         "──────────\n"
         "📊 NFT Positions\n"
-        + ("\n".join(nft_lines) if nft_lines else "—")
+        + ("\n\n".join(nft_lines) if nft_lines else "—")
         + "\n"
     )
     return msg
