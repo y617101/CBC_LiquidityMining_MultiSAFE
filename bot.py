@@ -147,10 +147,10 @@ def _cf_dt_jst(cf: dict) -> Optional[datetime]:
 
 from typing import Dict, List, Tuple
 
-def pick_confirmed_cf(cash_flows, period_start: datetime, period_end: datetime) -> List[dict]:
+def pick_confirmed_cf(cash_flows: List[dict], period_start: datetime, period_end: datetime) -> List[dict]:
     """
-    confirmed = fees-collected / claimed-fees
-    同一txで両方ある場合は二重計上しない（claimed-fees優先）
+    confirmed = fees-collected / claimed-fees（系）
+    同一txで複数ある場合は二重計上しない（claimed-fees優先）
     窓は [period_start, period_end)
     返却row:
       usd, amount_weth, amount_usdc, type, tx_hash, nft_id, raw
@@ -163,7 +163,7 @@ def pick_confirmed_cf(cash_flows, period_start: datetime, period_end: datetime) 
         except Exception:
             return 0.0
 
-    # 期間情報（関数内で1回だけ）
+    # window debug（1回だけ）
     dbg("DBG pick_confirmed_cf window JST:", period_start, period_end)
 
     passed = 0
@@ -191,13 +191,11 @@ def pick_confirmed_cf(cash_flows, period_start: datetime, period_end: datetime) 
         p0 = _to_f(((prices.get("token0") or {}).get("usd")))
         p1 = _to_f(((prices.get("token1") or {}).get("usd")))
 
-        # Revertは amount0/1 が文字列のことがある
         a0 = cf.get("amount0")
         a1 = cf.get("amount1")
         a0 = _to_f(a0 if a0 is not None else cf.get("collected_fees_token0"))
         a1 = _to_f(a1 if a1 is not None else cf.get("collected_fees_token1"))
 
-        # USD（まず cf.usd を見て、ダメなら prices×amount）
         usd = _to_f(cf.get("usd"))
         if usd <= 0:
             if p0 > 0 or p1 > 0:
@@ -205,19 +203,16 @@ def pick_confirmed_cf(cash_flows, period_start: datetime, period_end: datetime) 
         if usd < 0:
             usd = 0.0
 
-        # WETH/USDC 推定（USDCはだいたい1.0、WETHはだいたい100以上）
+        # WETH/USDC 推定（priceで推定）
         weth_amt = 0.0
         usdc_amt = 0.0
         if p0 > 100 and 0.9 <= p1 <= 1.1:
-            # token0=WETH, token1=USDC
             weth_amt = a0
             usdc_amt = a1
         elif p1 > 100 and 0.9 <= p0 <= 1.1:
-            # token1=WETH, token0=USDC
             weth_amt = a1
             usdc_amt = a0
         else:
-            # price欠損などのfallback（推定）
             if p0 >= p1:
                 weth_amt = a0
                 usdc_amt = a1
@@ -225,7 +220,7 @@ def pick_confirmed_cf(cash_flows, period_start: datetime, period_end: datetime) 
                 weth_amt = a1
                 usdc_amt = a0
 
-        # 窓内PASS（サマリ用）※上位5件だけ
+        # sample log（上位5件）
         if passed <= 5:
             dbg(
                 "DBG PASS sample",
@@ -248,22 +243,16 @@ def pick_confirmed_cf(cash_flows, period_start: datetime, period_end: datetime) 
             "raw": cf,
         })
 
-    # 重複排除（claimed優先）: (tx_hash, nft_id) 単位でまとめる
-    grouped: Dict[Tuple[str, str], List[dict]] = {}
-
+    # 重複排除（claimed-fees優先）
+    grouped: Dict[tuple, List[dict]] = {}
     for r in rows:
         tx = (r.get("tx_hash") or "").strip()
-        nft_id = (r.get("nft_id") or "").strip()
-
+        nft = (r.get("nft_id") or "").strip()
         raw = r.get("raw") or {}
+
         fallback = str(raw.get("timestamp") or raw.get("date") or "")
-
-        # tx_hashが無い場合のfallback（衝突回避の最低限）
-        if not tx:
-            tx = f"__no_tx__{fallback}"
-
-        k = (tx, nft_id if nft_id else "__no_nft__")
-        grouped.setdefault(k, []).append(r)
+        key = (tx, nft if nft else f"__no_nft__{fallback}")
+        grouped.setdefault(key, []).append(r)
 
     picked: List[dict] = []
     for _, arr in grouped.items():
@@ -272,20 +261,12 @@ def pick_confirmed_cf(cash_flows, period_start: datetime, period_end: datetime) 
 
         claimed = [item for item in arr if _norm_cf_type(item.get("type")) == "claimed-fees"]
         target = claimed if claimed else arr
-        if not target:
-            continue
-
         best = max(target, key=lambda item: float(item.get("usd") or 0.0))
         picked.append(best)
 
     dbg("DBG pick_confirmed_cf passed/rows:", passed, len(rows))
     dbg("DBG pick_confirmed_cf grouped/picked:", len(grouped), len(picked))
 
-    # DEBUG: picked合計（WETH/USDC）を確認
-    total_weth = sum(float(r.get("amount_weth") or 0.0) for r in picked)
-    total_usdc = sum(float(r.get("amount_usdc") or 0.0) for r in picked)
-    dbg("DEBUG FINAL SUM WETH:", total_weth)
-    dbg("DEBUG FINAL SUM USDC:", total_usdc)
     return picked
 
 _pick_confirmed_cf = pick_confirmed_cf
@@ -295,6 +276,83 @@ _pick_confirmed_cf = pick_confirmed_cf
 # ================================
 JST = timezone(timedelta(hours=9))
 REVERT_API = "https://api.revert.finance"
+
+def compute_daily_revert_metrics(
+    safe_address: str,
+    period_end: datetime,
+) -> Tuple[List[dict], float, float, float, float, float, float]:
+    """
+    Daily (LIVE, REVERT-only)
+    Returns:
+      pos_open,
+      net_total,
+      uncollected_now_value,
+      avg_confirmed_7d_usd,
+      mtd_confirmed_usd,
+      mtd_weth,
+      mtd_usdc
+    """
+    # positions
+    resp_open = fetch_positions(safe_address, active=True)
+    resp_exited = fetch_positions(safe_address, active=False)
+
+    pos_open = _normalize_positions(resp_open)
+    pos_exited = _normalize_positions(resp_exited)
+    pos_all = (pos_open or []) + (pos_exited or [])
+
+    # net_total（openだけ）
+    net_total = 0.0
+    for pos in (pos_open or []):
+        net_total += float(to_f(calc_net_usd(pos), 0.0) or 0.0)
+
+    # uncollected now（openの fees_value 合算）
+    uncollected_now_value = 0.0
+    for p in (pos_open or []):
+        try:
+            if p.get("fees_value") is not None:
+                uncollected_now_value += float(p.get("fees_value") or 0.0)
+            elif p.get("uncollected_fees_value") is not None:
+                uncollected_now_value += float(p.get("uncollected_fees_value") or 0.0)
+        except Exception:
+            pass
+
+    # cash_flows all（nft_id補完つき）
+    cash_flows_all: List[dict] = []
+    for pos in (pos_all or []):
+        pos_nft = str(pos.get("nft_id") or "").strip()
+        cfs = pos.get("cash_flows") or []
+        if not isinstance(cfs, list):
+            continue
+        for cf in cfs:
+            if isinstance(cf, dict) and pos_nft:
+                if not (cf.get("nft_id") or cf.get("token_id")):
+                    cf["_pos_nft_id"] = pos_nft
+            cash_flows_all.append(cf)
+
+    # 7d confirmed window（[end-7d, end)）
+    start_7d = period_end - timedelta(days=7)
+    rows_7d = pick_confirmed_cf(cash_flows_all, start_7d, period_end)
+    confirmed_7d = float(sum((r.get("usd") or 0.0) for r in rows_7d))
+    avg_confirmed_7d_usd = confirmed_7d / 7.0 if confirmed_7d > 0 else 0.0
+
+    # MTD confirmed window（[month_start, end)）
+    pe = period_end.astimezone(JST)
+    month_start = datetime(pe.year, pe.month, 1, 0, 0, 0, tzinfo=JST)
+
+    mtd_rows = pick_confirmed_cf(cash_flows_all, month_start, period_end)
+    mtd_confirmed_usd = float(sum((r.get("usd") or 0.0) for r in mtd_rows))
+    mtd_weth = float(sum((r.get("amount_weth") or 0.0) for r in mtd_rows))
+    mtd_usdc = float(sum((r.get("amount_usdc") or 0.0) for r in mtd_rows))
+
+    return (
+        pos_open,
+        float(net_total),
+        float(uncollected_now_value),
+        float(avg_confirmed_7d_usd),
+        float(mtd_confirmed_usd),
+        float(mtd_weth),
+        float(mtd_usdc),
+    )
 
 
 # ================================
@@ -422,11 +480,11 @@ def month_start_09_jst(period_end: datetime) -> datetime:
 
 
 # ================================
-# Time (JST 09:00 anchor)
+# Time (JST 00:00 close; send at 09:00)
 # ================================
 def get_period_end_jst(now: Optional[datetime] = None) -> datetime:
     """
-    Daily end aligned to 09:00 JST.
+    Daily end aligned to 00:00 JST.
     """
     if now is None:
         now = datetime.now(JST)
@@ -436,7 +494,7 @@ def get_period_end_jst(now: Optional[datetime] = None) -> datetime:
         else:
             now = now.astimezone(JST)
 
-    anchor = now.replace(hour=9, minute=0, second=0, microsecond=0)
+    anchor = now.replace(hour=0, minute=0, second=0, microsecond=0)
     if now < anchor:
         anchor -= timedelta(days=1)
     return anchor
@@ -444,8 +502,8 @@ def get_period_end_jst(now: Optional[datetime] = None) -> datetime:
 
 def get_weekly_period_end_jst(now: Optional[datetime] = None) -> datetime:
     """
-    Weekly end aligned to Sunday 09:00 JST (= Sunday 08:00 PH).
-    Returns most recent Sunday 09:00 JST (inclusive boundary).
+    Weekly end aligned to Sunday 00:00 JST.
+    Returns most recent Sunday 00:00 JST (inclusive boundary).
     """
     if now is None:
         now = datetime.now(JST)
@@ -457,10 +515,10 @@ def get_weekly_period_end_jst(now: Optional[datetime] = None) -> datetime:
 
     # weekday: Mon=0 ... Sun=6
     days_since_sun = (now.weekday() - 6) % 7
-    sun_9 = (now - timedelta(days=days_since_sun)).replace(hour=9, minute=0, second=0, microsecond=0)
-    if now < sun_9:
-        sun_9 -= timedelta(days=7)
-    return sun_9
+    sun_0 = (now - timedelta(days=days_since_sun)).replace(hour=0, minute=0, second=0, microsecond=0)
+    if now < sun_0:
+        sun_0 -= timedelta(days=7)
+    return sun_0
 
 
 def pick_mode_auto(now: Optional[datetime] = None) -> str:
@@ -473,7 +531,6 @@ def get_mode() -> str:
     if raw in ("DAILY", "WEEKLY"):
         return raw
     return pick_mode_auto()
-
 
 # ================================
 # Telegram
@@ -1059,18 +1116,18 @@ def build_daily_message(
     safe_address: str,
     period_end: datetime,
     net_total: float,
-    emitted_today: float,  # ←互換のため残す（この関数内では使わない）
-    history: List[List[str]],
+    emitted_today: float,  # 互換（未使用）
+    history: List[List[str]],  # 互換（未使用）
     pos_open: List[dict],
+    avg_confirmed_7d_usd: float,
+    mtd_confirmed_usd: float,
+    mtd_weth: float,
+    mtd_usdc: float,
 ) -> str:
-    # --------------------------------
-    # ① 「現在DEX手数料収益（Value）」＝ uncollected現在値（positionsの現在値合算）
-    #    ※ Revert Positions API では fees_value が未回収USD相当として入っていることが多い
-    # --------------------------------
+    # 現在DEX手数料（Value）＝ uncollected now
     uncollected_now_value = 0.0
     for p in (pos_open or []):
         try:
-            # fees_value を優先、無ければ uncollected_fees_value 等へフォールバック
             if p.get("fees_value") is not None:
                 uncollected_now_value += float(p.get("fees_value") or 0.0)
             elif p.get("uncollected_fees_value") is not None:
@@ -1078,34 +1135,18 @@ def build_daily_message(
         except Exception:
             pass
 
-    # --------------------------------
-    # ② 7日平均 / MTD は「confirmedのみ」で計算
-    #    あなたのシート構造（推定）:
-    #    [period_end, safe_name, safe_address, net_total, claimed_24h, unclaimed, emitted]
-    #                          index:    0         1        2         3         4        5      6
-    #    → confirmedは claimed_24h（index=4）を使う
-    # --------------------------------
-    CONFIRMED_COL = 4
+    # APR（直近7日平均）＝ confirmed-only
+    apr_7d = (avg_confirmed_7d_usd / net_total) * 365.0 * 100.0 if net_total > 0 else 0.0
 
-    confirmed_7d = sum_last_n_days(history, 7, CONFIRMED_COL)
-    avg_confirmed_7d = confirmed_7d / 7.0 if confirmed_7d > 0 else 0.0
-
-    mtd_confirmed = sum_month_to_date(history, period_end, CONFIRMED_COL)
-
-    # --------------------------------
-    # ③ APR（直近7日平均）＝ confirmedのみ（安定版）
-    #    APR = (avg_confirmed_7d / net_total) * 365
-    # --------------------------------
-    apr_7d = (avg_confirmed_7d / net_total) * 365.0 * 100.0 if net_total > 0 else 0.0
-
+    nft_lines = build_nft_lines_revert_apr(pos_open)
     safe_link = fmt_safe_link(safe_address)
 
     msg = (
         "🚀 CBC Liquidity Mining — Daily\n"
-        f"Period End: {period_end.strftime('%Y-%m-%d %H:%M')} JST\n"
+        f"Period End: {period_end.strftime('%Y-%m-%d %H:%M')} JST (LIVE)\n"
         f"SAFE {safe_link}\n"
         "────────────────\n\n"
-        "🗓 現在DEX手数料収益（Value）\n"
+        "🗓 現在DEX手数料（Value）\n"
         f"{fmt_money(uncollected_now_value)}\n\n"
         "📈 推定戦略APR（直近7日平均）\n"
         f"{fmt_pct(apr_7d)}\n\n"
@@ -1113,9 +1154,14 @@ def build_daily_message(
         f"{fmt_money(net_total)}\n\n"
         "────────────────\n"
         "🎉 月間累計 確定DEX手数料収益\n"
-        f"{fmt_money(mtd_confirmed)}（Value）\n\n"
+        f"{mtd_weth:.6f} ETH  {mtd_usdc:,.2f} USDC\n"
+        f"{fmt_money(mtd_confirmed_usd)}（Value）\n\n"
         "📆 1日あたり確定DEX手数料収益（直近7日平均）\n"
-        f"{fmt_money(avg_confirmed_7d)}\n"
+        f"{fmt_money(avg_confirmed_7d_usd)}\n\n"
+        "────────────────\n"
+        "📊 NFT Positions\n"
+        + ("\n".join(nft_lines) if nft_lines else "—")
+        + "\n"
     )
     return msg
 
@@ -1342,9 +1388,6 @@ def compute_weekly_confirmed_metrics(
         float(all_weth),
         float(all_usdc),
     )
-# ================================
-# main
-# ================================
 def main():
     mode = get_mode()
     print(f"DBG MODE={mode}", flush=True)
@@ -1355,31 +1398,13 @@ def main():
         print("config.json: safes is empty", flush=True)
         return
 
-    # period_end
+    # period_end（00:00〆）
     if mode == "WEEKLY":
         period_end = get_weekly_period_end_jst()
     else:
         period_end = get_period_end_jst()
 
     print("DBG period_end JST:", period_end.strftime("%Y-%m-%d %H:%M"), flush=True)
-
-    # Sheets init（Daily history用）
-    sheets_enabled = True
-    ws_log = None
-    ws_wide = None
-    try:
-        client = get_gsheet_client()
-        sh = open_sheet(client)
-        ws_log = get_log_ws(sh)
-        ensure_log_header(ws_log)
-        ws_wide = get_daily_wide_ws(sh)
-    except Exception as e:
-        sheets_enabled = False
-        print(f"DBG: Sheets disabled (err={e})", flush=True)
-
-    all_rows: List[List[str]] = []
-    if sheets_enabled and ws_log:
-        all_rows = read_log_rows(ws_log)
 
     for s in safes:
         safe_name = (s.get("name") or "NONAME").strip()
@@ -1394,10 +1419,8 @@ def main():
             continue
 
         try:
-            safe_hist = get_safe_history(all_rows, safe_address)
-
             # ================================
-            # WEEKLY
+            # WEEKLY (FIX)
             # ================================
             if mode == "WEEKLY":
                 (
@@ -1429,52 +1452,29 @@ def main():
                 continue
 
             # ================================
-            # DAILY
+            # DAILY (LIVE, REVERT-only)
             # ================================
-            pos_open, _pos_all, net_total, claimed_24h, unclaimed_today = compute_today_metrics(
-                safe_address, period_end
-            )
-
-            y_unclaimed = get_yesterday_unclaimed_from_history(safe_hist)
-            delta_unclaimed = unclaimed_today - y_unclaimed
-            if delta_unclaimed < 0:
-                delta_unclaimed = 0.0
-            emitted_today = float(delta_unclaimed) + float(claimed_24h)
-
-            if sheets_enabled and ws_log:
-                upsert_daily_log_row(
-                    ws_log,
-                    period_end,
-                    safe_name,
-                    safe_address,
-                    net_total,
-                    claimed_24h,
-                    unclaimed_today,
-                    emitted_today,
-                )
-
-                # in-memory append
-                all_rows.append([
-                    period_end.strftime("%Y-%m-%d %H:%M"),
-                    safe_name,
-                    safe_address,
-                    str(net_total),
-                    str(claimed_24h),
-                    str(unclaimed_today),
-                    str(emitted_today),
-                ])
-                safe_hist = get_safe_history(all_rows, safe_address)
-
-            if sheets_enabled and ws_wide:
-                append_daily_wide_numbered(ws_wide, period_end, safe_name, safe_address, claimed_24h)
+            (
+                pos_open,
+                net_total,
+                _uncol_now_value,
+                avg_confirmed_7d_usd,
+                mtd_confirmed_usd,
+                mtd_weth,
+                mtd_usdc,
+            ) = compute_daily_revert_metrics(safe_address, period_end)
 
             msg = build_daily_message(
                 safe_address=safe_address,
                 period_end=period_end,
                 net_total=net_total,
-                emitted_today=emitted_today,
-                history=safe_hist,
+                emitted_today=0.0,
+                history=[],
                 pos_open=pos_open,
+                avg_confirmed_7d_usd=avg_confirmed_7d_usd,
+                mtd_confirmed_usd=mtd_confirmed_usd,
+                mtd_weth=mtd_weth,
+                mtd_usdc=mtd_usdc,
             )
             send_telegram(msg, chat_id)
 
