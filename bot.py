@@ -5,6 +5,9 @@ import requests
 from datetime import datetime, timedelta, timezone
 from typing import Dict, List, Optional, Tuple
 
+import gspread
+from google.oauth2.service_account import Credentials
+
 
 # ================================
 # Cash flow helpers
