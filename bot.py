@@ -167,7 +167,6 @@ def pick_confirmed_cf(cash_flows: List[dict], period_start: datetime, period_end
     # ここから下は既存の本処理（rows = [] 〜 return rows）をそのまま
     rows: List[dict] = []
     ...
-    return rows
 
     def _to_f(x) -> float:
         try:
