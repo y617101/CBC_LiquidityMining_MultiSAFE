@@ -1310,7 +1310,29 @@ def get_config_recipients_ws(sh):
 
 
 def load_active_recipients_for_safe(sh, safe_name: str):
-    ...
+    ws = get_config_recipients_ws(sh)
+    rows = sheets_call(ws.get_all_records) or []
+
+    result = []
+    for r in rows:
+        if str(r.get("safe_name", "")).strip() != safe_name:
+            continue
+        if not r.get("active"):
+            continue
+
+        pct_raw = str(r.get("pct", "")).replace("%", "").strip()
+        try:
+            pct = float(pct_raw) / 100.0
+        except Exception:
+            pct = 0.0
+
+        result.append({
+            "recipient_id": r.get("recipient_id"),
+            "name": r.get("name"),
+            "address": r.get("address"),
+            "pct": pct,
+        })
+
     return result
 
 
