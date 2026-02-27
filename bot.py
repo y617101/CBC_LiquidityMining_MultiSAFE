@@ -147,14 +147,19 @@ def _cf_dt_jst(cf: dict) -> Optional[datetime]:
 from typing import Dict, List, Tuple
 
 def pick_confirmed_cf(cash_flows: List[dict], period_start: datetime, period_end: datetime) -> List[dict]:
-    """
-    confirmed = fees-collected / claimed-fees（系）
-    同一txで複数ある場合は二重計上しない（claimed-fees優先）
-    窓は [period_start, period_end)
-    返却row:
-      usd, amount_weth, amount_usdc, type, tx_hash, nft_id, raw
-    """
+    types = {}
+    print("DBG cf sample keys:", list(cash_flows[0].keys()) if cash_flows else [], flush=True)
+    
+    for r in cash_flows:
+        t = str(r.get("type") or r.get("cash_flow_type") or r.get("event_type") or "").strip()
+        types[t] = types.get(t, 0) + 1
+
+    print("DBG cf types top:", sorted(types.items(), key=lambda x: -x[1])[:10], flush=True)
+
+    # ここから下は既存の本処理（rows = [] 〜 return rows）をそのまま
     rows: List[dict] = []
+    ...
+    return rows
 
     def _to_f(x) -> float:
         try:
@@ -1439,6 +1444,7 @@ def main():
                         
                         sheets_call(ws_payouts.append_row, row, value_input_option="USER_ENTERED")
                         # Telegramは最後に1回
+                    print(f"DBG before send_telegram mode={mode} name={safe_name} chat_id={chat_id} msg_len={len(msg) if msg else 0}", flush=True)
                     send_telegram(msg, chat_id)
                 
             # ================================
