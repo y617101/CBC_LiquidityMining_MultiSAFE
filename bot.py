@@ -613,6 +613,66 @@ def open_sheet(client):
         raise RuntimeError("ENV missing: GOOGLE_SHEET_ID")
     return client.open_by_key(sheet_id)
 
+# ---- WEEKLY_LOG (縦・追記のみ) ----
+def get_weekly_log_ws(sh):
+    tab_name = os.getenv("GOOGLE_SHEET_WEEKLY_LOG_TAB", "WEEKLY_LOG")
+    return sh.worksheet(tab_name)
+
+
+def ensure_weekly_log_header(ws):
+    values = sheets_call(ws.get_all_values) or []
+    if values and values[0] and (values[0][0] or "").strip().lower() == "week_ending_jst":
+        return
+    header = [
+        "week_ending_jst",
+        "safe_name",
+        "safe_address",
+        "confirmed_weth",
+        "confirmed_usdc",
+        "confirmed_usd_fix",
+        "created_at_jst",
+    ]
+    sheets_call(ws.update, range_name="A1", values=[header])
+    print("DBG: initialized WEEKLY_LOG header", flush=True)
+
+
+def append_weekly_log_row_once(
+    ws,
+    week_ending: datetime,
+    safe_name: str,
+    safe_address: str,
+    confirmed_weth: float,
+    confirmed_usdc: float,
+    confirmed_usd_fix: float,
+):
+    ensure_weekly_log_header(ws)
+
+    week_key = week_ending.strftime("%Y-%m-%d %H:%M")
+    safe_key = safe_address.strip().lower()
+
+    # 既存行チェック（上書きなし：同じ週×同じSAFEがあればスキップ）
+    values = sheets_call(ws.get_all_values) or []
+    rows = values[1:] if len(values) > 1 else []
+    for row in rows:
+        if len(row) < 3:
+            continue
+        if row[0].strip() == week_key and row[2].strip().lower() == safe_key:
+            print(f"DBG: WEEKLY_LOG skip existing week={week_key} safe={safe_name}", flush=True)
+            return
+
+    now_jst = datetime.now(JST).strftime("%Y-%m-%d %H:%M")
+    record = [
+        week_key,
+        safe_name,
+        safe_address,
+        f"{float(confirmed_weth):.8f}",
+        f"{float(confirmed_usdc):.6f}",
+        f"{float(confirmed_usd_fix):.2f}",
+        now_jst,
+    ]
+    sheets_call(ws.append_row, record, value_input_option="USER_ENTERED")
+    print(f"DBG: WEEKLY_LOG appended week={week_key} safe={safe_name}", flush=True)
+
 
 # ================================
 # Revert API (robust normalize)
@@ -1299,8 +1359,6 @@ def main():
                     sh = open_sheet(client)
                     ws_weekly = get_weekly_log_ws(sh)
                 
-                    # week_weth/week_usdc/week_claimed(USD) を保存
-                    # period_end はあなたの週次〆（日曜00:00 JST）なので、そのまま week_ending として使う
                     append_weekly_log_row_once(
                         ws_weekly,
                         week_ending=period_end,
@@ -1310,10 +1368,12 @@ def main():
                         confirmed_usdc=week_usdc,
                         confirmed_usd_fix=week_claimed,
                     )
-                except Exception as e:
-                    print(f"DBG: WEEKLY_LOG write failed name={safe_name} err={e}", flush=True)
-                send_telegram(msg, chat_id)
-                continue
+                    except Exception as e:
+                        print(f"DBG: WEEKLY_LOG write failed name={safe_name} safe={safe_address} err={e}", flush=True)
+                
+                # ✅ Sheetsが失敗してもTelegramは送る（ここ重要）
+        send_telegram(msg, chat_id)
+        continue
 
             # ================================
             # DAILY (LIVE, REVERT-only)
