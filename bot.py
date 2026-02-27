@@ -138,11 +138,19 @@ def _get_cf_usd(cf: dict) -> float:
     usd = amt0 * usd0 + amt1 * usd1
     return float(usd)
 
-def _cf_dt_jst(cf: dict) -> Optional[datetime]:
-    ts_sec = _to_ts_sec(cf.get("timestamp") or cf.get("ts") or cf.get("time"))
-    if not ts_sec:
+def ts_to_dt(ts):
+    if ts is None:
         return None
-    return datetime.fromtimestamp(int(ts_sec), tz=JST)
+    try:
+        x = float(ts)
+    except Exception:
+        return None
+
+    # ★ ms → s 自動補正（1e12 以上はだいたい ms）
+    if x > 1e12:
+        x = x / 1000.0
+
+    return datetime.fromtimestamp(x, tz=JST)
 
 from typing import Dict, List, Tuple
 
