@@ -1377,6 +1377,40 @@ def main():
                     all_usdc=all_usdc,
                     pos_open=pos_open,
                 )
+                msg = build_weekly_message(...)
+                # ===== Payout block（ここに入れる）=====
+                if mode == "WEEKLY":
+                    client = get_gsheet_client()
+                    sh = open_sheet(client)
+                    
+                    recipients = load_active_recipients_for_safe(sh, safe_name)
+                    
+                    pay_recipients = [
+                        r for r in recipients
+                        if str(r.get("recipient_id")).lower() != "system"
+                    ]
+                    
+                    base = float(week_claimed) * 0.90  # HUB10%残す
+                    
+                    ws_payouts = get_weekly_payouts_ws(sh)
+                    week_key = period_end.strftime("%Y-%m-%d %H:%M")
+                    created_at = datetime.now(JST).strftime("%Y-%m-%d %H:%M")
+                    
+                    for r in pay_recipients:
+                        amount = round(base * float(r["pct"]), 6)
+                        row = [
+                            week_key,
+                            safe_name,
+                            safe_address,
+                            r["recipient_id"],
+                            r["name"],
+                            r["address"],
+                            amount,
+                            created_at,
+                        ]
+                        sheets_call(ws_payouts.append_row, row, value_input_option="USER_ENTERED")
+                        # ======================================
+                send_telegram(msg, chat_id)
                 
             # ================================
             # DAILY (LIVE, REVERT-only)
