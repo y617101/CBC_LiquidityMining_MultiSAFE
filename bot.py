@@ -1293,6 +1293,25 @@ def main():
                     all_usdc=all_usdc,
                     pos_open=pos_open,
                 )
+                # --- Sheets: Weekly log append-only (no overwrite) ---
+                try:
+                    client = get_gsheet_client()
+                    sh = open_sheet(client)
+                    ws_weekly = get_weekly_log_ws(sh)
+                
+                    # week_weth/week_usdc/week_claimed(USD) を保存
+                    # period_end はあなたの週次〆（日曜00:00 JST）なので、そのまま week_ending として使う
+                    append_weekly_log_row_once(
+                        ws_weekly,
+                        week_ending=period_end,
+                        safe_name=safe_name,
+                        safe_address=safe_address,
+                        confirmed_weth=week_weth,
+                        confirmed_usdc=week_usdc,
+                        confirmed_usd_fix=week_claimed,
+                    )
+                except Exception as e:
+                    print(f"DBG: WEEKLY_LOG write failed name={safe_name} err={e}", flush=True)
                 send_telegram(msg, chat_id)
                 continue
 
