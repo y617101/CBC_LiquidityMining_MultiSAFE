@@ -1293,6 +1293,26 @@ def compute_weekly_confirmed_metrics(
         float(all_weth),
         float(all_usdc),
     )
+# ここまでが各種 helper関数たち
+
+def get_weekly_log_ws(sh):
+    tab_name = os.getenv("GOOGLE_SHEET_WEEKLY_LOG_TAB", "WEEKLY_LOG")
+    return sh.worksheet(tab_name)
+
+
+def get_config_recipients_ws(sh):
+    tab_name = os.getenv("GOOGLE_SHEET_CONFIG_TAB", "CONFIG_RECIPIENTS")
+    return sh.worksheet(tab_name)
+
+
+def load_active_recipients_for_safe(sh, safe_name: str):
+    ...
+    return result
+
+
+# ここから main
+def main():
+    ...
 def main():
     mode = get_mode()
     print(f"DBG MODE={mode}", flush=True)
