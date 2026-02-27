@@ -618,6 +618,10 @@ def get_weekly_log_ws(sh):
     tab_name = os.getenv("GOOGLE_SHEET_WEEKLY_LOG_TAB", "WEEKLY_LOG")
     return sh.worksheet(tab_name)
 
+def get_weekly_payouts_ws(sh):
+    tab_name = os.getenv("GOOGLE_SHEET_PAYOUTS_TAB", "WEEKLY_PAYOUTS")
+    return sh.worksheet(tab_name)
+
 
 def ensure_weekly_log_header(ws):
     values = sheets_call(ws.get_all_values) or []
