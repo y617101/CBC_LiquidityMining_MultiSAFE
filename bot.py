@@ -1401,6 +1401,7 @@ def main():
                 )
                 # ===== Payout block（ここに入れる）=====
                 if mode == "WEEKLY":
+                    continue
             # ---- payout (WEEKLY only) ----
                     client = get_gsheet_client()
                     sh = open_sheet(client)
