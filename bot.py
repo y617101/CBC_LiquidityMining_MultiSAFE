@@ -180,13 +180,22 @@ def pick_confirmed_cf(cash_flows: List[dict], period_start: datetime, period_end
 
     passed = 0
 
+    passed = 0
+    shown = 0  # ← 追加
+    
     for cf in (cash_flows or []):
         if not isinstance(cf, dict):
             continue
-
-        t_norm = _norm_cf_type(cf.get("type"))
-        if not is_claimed_type(t_norm):
-            continue
+            
+            t_norm = norm_cf_type(cf.get("type"))
+            dt = ts_to_dt(cf.get("timestamp"))
+            
+    # ★ ここ追加（claimed-feesだけ見る）
+        if t_norm == "claimed-fees" and shown < 5:
+            print("DBG claimed-fees raw ts=", cf.get("timestamp"),
+                  "dt=", dt,
+                  flush=True)
+            shown += 1
 
         dt = _cf_dt_jst(cf)
         if not dt:
