@@ -1373,35 +1373,6 @@ def main():
                     all_usdc=all_usdc,
                     pos_open=pos_open,
                 )
-       # --- Distribution: confirmed_usd_fix を USDCとして配当（案） ---
-    try:
-        recipients = load_active_recipients_for_safe(sh, safe_name)
-        total_usdc_base = float(week_claimed)
-
-        ws_payouts = sh.worksheet(os.getenv("GOOGLE_SHEET_PAYOUTS_TAB", "WEEKLY_PAYOUTS"))
-
-        week_key = period_end.strftime("%Y-%m-%d %H:%M")
-        created_at = datetime.now(JST).strftime("%Y-%m-%d %H:%M")
-
-        for r in recipients:
-            amount = round(total_usdc_base * float(r["pct"]), 6)
-            row = [
-                week_key,
-                safe_name,
-                safe_address,
-                r["recipient_id"],
-                r["name"],
-                r["address"],
-                amount,
-                created_at,
-            ]
-            sheets_call(ws_payouts.append_row, row, value_input_option="USER_ENTERED")
-
-        print(f"DBG: WEEKLY_PAYOUTS appended rows={len(recipients)} safe={safe_name}", flush=True)
-
-    except Exception as e:
-        print(f"DBG: WEEKLY_PAYOUTS write failed safe={safe_name} err={e}", flush=True)
-        continue
                 
             # ================================
             # DAILY (LIVE, REVERT-only)
