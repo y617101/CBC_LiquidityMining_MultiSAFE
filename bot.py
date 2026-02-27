@@ -1358,7 +1358,7 @@ def main():
                     client = get_gsheet_client()
                     sh = open_sheet(client)
                     ws_weekly = get_weekly_log_ws(sh)
-                
+
                     append_weekly_log_row_once(
                         ws_weekly,
                         week_ending=period_end,
@@ -1368,13 +1368,14 @@ def main():
                         confirmed_usdc=week_usdc,
                         confirmed_usd_fix=week_claimed,
                     )
-                    except Exception as e:
-                        print(f"DBG: WEEKLY_LOG write failed name={safe_name} safe={safe_address} err={e}", flush=True)
-                
-                # ✅ Sheetsが失敗してもTelegramは送る（ここ重要）
-        send_telegram(msg, chat_id)
-        continue
+                except Exception as e:
+                    print(
+                        f"DBG: WEEKLY_LOG write failed name={safe_name} safe={safe_address} err={e}",
+                        flush=True,
+                    )
 
+                send_telegram(msg, chat_id)
+                continue
             # ================================
             # DAILY (LIVE, REVERT-only)
             # ================================
