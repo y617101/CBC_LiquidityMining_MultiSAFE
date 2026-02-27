@@ -192,29 +192,40 @@ def pick_confirmed_cf(cash_flows: List[dict], period_start: datetime, period_end
     passed = 0
     shown = 0
     
+    shown = 0
+
     for cf in (cash_flows or []):
         if not isinstance(cf, dict):
             continue
-            
-            t_raw = cf.get("type") or cf.get("cash_flow_type") or cf.get("event_type") or ""
-            t_norm = norm_cf_type(t_raw)
-            
-            dt = ts_to_dt(cf.get("timestamp") or cf.get("created_at") or cf.get("time"))
-            
-            if t_norm == "claimed-fees" and shown < 5:
-                print("DBG claimed-fees dt check:",
-                      "raw_ts=", cf.get("timestamp"),
-                      "dt=", dt,
-                      "type=", t_raw,
-                      flush=True)
-                shown += 1
-                
-                if not dt:
-                    continue
-                    if not (period_start <= dt < period_end):
-                        continue
+    
+        # ★必ず初期化（これで UnboundLocalError を潰す）
+        dt = None
+        t_norm = ""
+    
+        t_norm = norm_cf_type(cf.get("type"))
+        dt = ts_to_dt(cf.get("timestamp"))
+    
+        # (任意) claimed-fees の dt を最初だけ表示
+        if t_norm == "claimed-fees" and shown < 5:
+            print(
+                "DBG claimed-fees dt check:",
+                "raw_ts=", cf.get("timestamp"),
+                "dt=", dt,
+                "type=", cf.get("type"),
+                flush=True
+            )
+            shown += 1
+    
+        # ↓ window 判定（dt が None のときも安全）
+        if not dt:
+            continue
+        if not (period_start <= dt < period_end):
+            continue
 
-    # ここからADD（rows.appendなど）
+        # ここから下が「採用」ロジック
+        ...
+    
+        # ここからADD（rows.appendなど）
 
         passed += 1
 
