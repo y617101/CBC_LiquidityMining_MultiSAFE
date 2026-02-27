@@ -1354,28 +1354,54 @@ def main():
                     pos_open=pos_open,
                 )
                 # --- Sheets: Weekly log append-only (no overwrite) ---
-                try:
-                    client = get_gsheet_client()
-                    sh = open_sheet(client)
-                    ws_weekly = get_weekly_log_ws(sh)
-
-                    append_weekly_log_row_once(
-                        ws_weekly,
-                        week_ending=period_end,
-                        safe_name=safe_name,
-                        safe_address=safe_address,
-                        confirmed_weth=week_weth,
-                        confirmed_usdc=week_usdc,
-                        confirmed_usd_fix=week_claimed,
-                    )
-                except Exception as e:
-                    print(
-                        f"DBG: WEEKLY_LOG write failed name={safe_name} safe={safe_address} err={e}",
-                        flush=True,
-                    )
-
-                send_telegram(msg, chat_id)
+        try:
+            client = get_gsheet_client()
+            sh = open_sheet(client)
+        
+            # ① WEEKLY_LOG に追記（上書きなし）
+            ws_weekly = get_weekly_log_ws(sh)
+            append_weekly_log_row_once(
+                ws_weekly,
+                week_ending=period_end,
+                safe_name=safe_name,
+                safe_address=safe_address,
+                confirmed_weth=week_weth,
+                confirmed_usdc=week_usdc,
+                confirmed_usd_fix=week_claimed,
+            )
+        
+            # ② 週次分配（WEEKLY_PAYOUTS に追記）
+            recipients = load_active_recipients_for_safe(sh, safe_name)
+        
+            total_usdc_base = float(week_claimed)  # confirmed_usd_fix をUSDC扱い（案）
+            ws_payouts = sh.worksheet(os.getenv("GOOGLE_SHEET_PAYOUTS_TAB", "WEEKLY_PAYOUTS"))
+        
+            week_key = period_end.strftime("%Y-%m-%d %H:%M")
+            created_at = datetime.now(JST).strftime("%Y-%m-%d %H:%M")
+        
+            for r in recipients:
+                # r["pct"] は load_active_recipients_for_safe で「0.10」みたいな比率にしてある前提
+                amount = round(total_usdc_base * float(r.get("pct", 0.0)), 6)
+        
+                row = [
+                    week_key,
+                    safe_name,
+                    safe_address,
+                    r.get("recipient_id", ""),
+                    r.get("name", ""),
+                    r.get("address", ""),
+                    float(r.get("pct", 0.0)),
+                    amount,
+                    created_at,
+                ]
+                sheets_call(ws_payouts.append_row, row, value_input_option="USER_ENTERED")
+        
+            print(f"DBG: WEEKLY_PAYOUTS appended rows={len(recipients)} safe={safe_name}", flush=True)
+        
+        except Exception as e:
+            print(f"DBG: SHEETS write failed name={safe_name} safe={safe_address} err={e}", flush=True)
                 continue
+                
             # ================================
             # DAILY (LIVE, REVERT-only)
             # ================================
