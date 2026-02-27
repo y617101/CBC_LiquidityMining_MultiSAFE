@@ -202,7 +202,8 @@ def pick_confirmed_cf(cash_flows: List[dict], period_start: datetime, period_end
         dt = None
         t_norm = ""
     
-        t_norm = norm_cf_type(cf.get("type"))
+        t_norm = _norm_cf_type(cf.get("type"))
+        norm_cf_type = _norm_cf_type
         dt = ts_to_dt(cf.get("timestamp"))
     
         # (任意) claimed-fees の dt を最初だけ表示
