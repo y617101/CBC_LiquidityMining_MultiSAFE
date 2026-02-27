@@ -138,20 +138,30 @@ def _get_cf_usd(cf: dict) -> float:
     usd = amt0 * usd0 + amt1 * usd1
     return float(usd)
 
+from datetime import datetime
+
 def ts_to_dt(ts):
     if ts is None:
         return None
-    try:
+
+    # 数値（秒 or ミリ秒）
+    if isinstance(ts, (int, float)):
         x = float(ts)
-    except Exception:
-        return None
+        if x > 1e12:  # ms対応
+            x /= 1000.0
+        return datetime.fromtimestamp(x, tz=JST)
 
-    # ★ ms → s 自動補正（1e12 以上はだいたい ms）
-    if x > 1e12:
-        x = x / 1000.0
+    # 文字列（ISO8601: 2026-02-14T11:13:59Z など）
+    if isinstance(ts, str):
+        s = ts.strip()
+        try:
+            if s.endswith("Z"):
+                s = s[:-1] + "+00:00"
+            return datetime.fromisoformat(s).astimezone(JST)
+        except Exception:
+            return None
 
-    return datetime.fromtimestamp(x, tz=JST)
-
+    return None
 from typing import Dict, List, Tuple
 
 def pick_confirmed_cf(cash_flows: List[dict], period_start: datetime, period_end: datetime) -> List[dict]:
@@ -180,27 +190,31 @@ def pick_confirmed_cf(cash_flows: List[dict], period_start: datetime, period_end
     passed = 0
 
     passed = 0
-    shown = 0  # ← 追加
+    shown = 0
     
     for cf in (cash_flows or []):
         if not isinstance(cf, dict):
             continue
             
-            t_norm = norm_cf_type(cf.get("type"))
-            dt = ts_to_dt(cf.get("timestamp"))
+            t_raw = cf.get("type") or cf.get("cash_flow_type") or cf.get("event_type") or ""
+            t_norm = norm_cf_type(t_raw)
             
-    # ★ ここ追加（claimed-feesだけ見る）
-        if t_norm == "claimed-fees" and shown < 5:
-            print("DBG claimed-fees raw ts=", cf.get("timestamp"),
-                  "dt=", dt,
-                  flush=True)
-            shown += 1
+            dt = ts_to_dt(cf.get("timestamp") or cf.get("created_at") or cf.get("time"))
+            
+            if t_norm == "claimed-fees" and shown < 5:
+                print("DBG claimed-fees dt check:",
+                      "raw_ts=", cf.get("timestamp"),
+                      "dt=", dt,
+                      "type=", t_raw,
+                      flush=True)
+                shown += 1
+                
+                if not dt:
+                    continue
+                    if not (period_start <= dt < period_end):
+                        continue
 
-        dt = _cf_dt_jst(cf)
-        if not dt:
-            continue
-        if not (period_start <= dt < period_end):
-            continue
+    # ここからADD（rows.appendなど）
 
         passed += 1
 
