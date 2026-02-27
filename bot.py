@@ -1377,40 +1377,46 @@ def main():
                     all_usdc=all_usdc,
                     pos_open=pos_open,
                 )
-                msg = build_weekly_message(...)
                 # ===== Payout block（ここに入れる）=====
                 if mode == "WEEKLY":
+            # ---- payout (WEEKLY only) ----
                     client = get_gsheet_client()
                     sh = open_sheet(client)
+                    ws_payouts = sh.worksheet(os.getenv("GOOGLE_SHEET_PAYOUTS_TAB", "WEEKLY_PAYOUTS"))
                     
                     recipients = load_active_recipients_for_safe(sh, safe_name)
                     
+                    total_usdc_base = float(week_claimed)  # 原資(USDC扱い)
+                    
                     pay_recipients = [
                         r for r in recipients
-                        if str(r.get("recipient_id")).lower() != "system"
+                        if str(r.get("recipient_id", "")).lower() != "system"
                     ]
                     
-                    base = float(week_claimed) * 0.90  # HUB10%残す
+                    sum_pay_pct = sum(float(r.get("pct", 0.0)) for r in pay_recipients)
                     
-                    ws_payouts = get_weekly_payouts_ws(sh)
                     week_key = period_end.strftime("%Y-%m-%d %H:%M")
                     created_at = datetime.now(JST).strftime("%Y-%m-%d %H:%M")
                     
                     for r in pay_recipients:
-                        amount = round(base * float(r["pct"]), 6)
+                        pct = float(r.get("pct", 0.0))
+                        pct_norm = (pct / sum_pay_pct) if sum_pay_pct > 0 else 0.0  # 90%→100%に正規化
+                        amount = round(total_usdc_base * pct_norm, 6)
+                        
                         row = [
                             week_key,
                             safe_name,
                             safe_address,
-                            r["recipient_id"],
-                            r["name"],
-                            r["address"],
+                            r.get("recipient_id"),
+                            r.get("name"),
+                            r.get("address"),
                             amount,
                             created_at,
                         ]
+                        
                         sheets_call(ws_payouts.append_row, row, value_input_option="USER_ENTERED")
-                        # ======================================
-                send_telegram(msg, chat_id)
+                        # Telegramは最後に1回
+                    send_telegram(msg, chat_id)
                 
             # ================================
             # DAILY (LIVE, REVERT-only)
