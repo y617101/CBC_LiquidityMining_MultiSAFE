@@ -492,6 +492,43 @@ def get_weekly_log_ws(sh):
     tab_name = os.getenv("GOOGLE_SHEET_WEEKLY_LOG_TAB", "WEEKLY_LOG")
     return sh.worksheet(tab_name)
 
+def append_weekly_log_row_once(
+    ws,
+    week_ending,
+    safe_name,
+    safe_address,
+    confirmed_weth,
+    confirmed_usdc,
+    confirmed_usd_fix,
+):
+    """
+    WEEKLY_LOG に 週×SAFE で1行だけ追加
+    既に同じ週＋SAFEがあればスキップ
+    """
+
+    week_key = week_ending.strftime("%Y-%m-%d %H:%M")
+
+    # 既存行チェック
+    existing = ws.get_all_values()
+    for row in existing[1:]:  # ヘッダー除外
+        if len(row) < 3:
+            continue
+        if row[0] == week_key and row[2] == safe_address:
+            print(f"DBG: WEEKLY_LOG skip existing {safe_name} {week_key}")
+            return
+
+    # 新規追加
+    ws.append_row([
+        week_key,
+        safe_name,
+        safe_address,
+        float(confirmed_weth),
+        float(confirmed_usdc),
+        float(confirmed_usd_fix),
+    ], value_input_option="USER_ENTERED")
+
+    print(f"DBG: WEEKLY_LOG appended {safe_name} {week_key}")
+
 def get_config_recipients_ws(sh):
     tab_name = os.getenv("GOOGLE_SHEET_CONFIG_TAB", "CONFIG_RECIPIENTS")
     return sh.worksheet(tab_name)
