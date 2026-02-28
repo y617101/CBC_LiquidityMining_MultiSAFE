@@ -1076,6 +1076,7 @@ def compute_weekly_confirmed_metrics(
 # ================================
 # main
 # ================================
+print("DBG has append_weekly_log_row_once:", "append_weekly_log_row_once" in globals(), flush=True)
 def main():
     mode = get_mode()
     print(f"DBG MODE={mode}", flush=True)
