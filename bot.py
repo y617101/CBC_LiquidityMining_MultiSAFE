@@ -1094,8 +1094,21 @@ def main():
                 # ---- payout (WEEKLY only) ----
                 client = get_gsheet_client()
                 sh = open_sheet(client)
+                
+                # ✅ WEEKLY_LOG に 1行書く（週×SAFEで重複はスキップ）
+                ws_weekly_log = get_weekly_log_ws(sh)
+                append_weekly_log_row_once(
+                    ws_weekly_log,
+                    week_ending=period_end,
+                    safe_name=safe_name,
+                    safe_address=safe_address,
+                    confirmed_weth=week_weth,
+                    confirmed_usdc=week_usdc,
+                    confirmed_usd_fix=week_claimed,  # USD(FIX)
+                )
+                
+                # (既存) payout sheet
                 ws_payouts = sh.worksheet(os.getenv("GOOGLE_SHEET_PAYOUTS_TAB", "WEEKLY_PAYOUTS"))
-
                 recipients = load_active_recipients_for_safe(sh, safe_name)
 
                 total_usdc_base = float(week_claimed)  # 原資(USDC扱い)
