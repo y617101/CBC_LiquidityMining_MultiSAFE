@@ -483,6 +483,15 @@ def open_sheet(client):
         raise RuntimeError("ENV missing: GOOGLE_SHEET_ID")
     return client.open_by_key(sheet_id)
 
+def get_weekly_log_ws(sh):
+    """
+    WEEKLY_LOG シートを取得
+    環境変数 GOOGLE_SHEET_WEEKLY_LOG_TAB があればそれを使用
+    無ければ 'WEEKLY_LOG'
+    """
+    tab_name = os.getenv("GOOGLE_SHEET_WEEKLY_LOG_TAB", "WEEKLY_LOG")
+    return sh.worksheet(tab_name)
+
 def get_config_recipients_ws(sh):
     tab_name = os.getenv("GOOGLE_SHEET_CONFIG_TAB", "CONFIG_RECIPIENTS")
     return sh.worksheet(tab_name)
