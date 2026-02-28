@@ -4,11 +4,113 @@ import html
 import time
 import requests
 print("DBG BOOT MARKER: 2026-02-24-AAAA", flush=True)
+
 from datetime import datetime, timedelta, timezone
 from typing import Dict, List, Optional, Tuple
 
 import gspread
 from google.oauth2.service_account import Credentials
+
+# ================================
+# Constants (JST MUST be defined early)
+# ================================
+JST = timezone(timedelta(hours=9))
+REVERT_API = "https://api.revert.finance"
+
+WETH_ADDR = "0x4200000000000000000000000000000000000006".lower()
+USDC_ADDR = "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913".lower()
+
+# ================================
+# Small helpers
+# ================================
+def h(x) -> str:
+    return html.escape(str(x), quote=True)
+
+def to_f(x, default=None):
+    try:
+        return float(x)
+    except Exception:
+        return default
+
+def fmt_money(x):
+    try:
+        return f"${float(x):,.2f}"
+    except Exception:
+        return "N/A"
+
+def fmt_pct(x):
+    try:
+        return f"{float(x):.2f}%"
+    except Exception:
+        return "N/A"
+
+def _lower(s):
+    return str(s or "").strip().lower()
+
+def dbg(*args):
+    if (os.getenv("DEBUG") or "").strip() == "1":
+        print(*args, flush=True)
+
+def build_basescan_addr_link(addr: str) -> str:
+    a = (addr or "").strip()
+    return f"https://basescan.org/address/{a}"
+
+def mask_safe_addr(addr: str) -> str:
+    a = (addr or "").strip()
+    if len(a) <= (2 + 5 + 4):
+        return a
+    return f"{a[:2+5]}*****{a[-4:]}"
+
+def fmt_safe_link(addr: str) -> str:
+    url = build_basescan_addr_link(addr)
+    label = mask_safe_addr(addr)
+    return f'<a href="{h(url)}">{h(label)}</a>'
+
+def build_uniswap_link_base(nft_id: str) -> str:
+    return f"https://app.uniswap.org/positions/v3/base/{nft_id}"
+
+def _to_ts_sec(ts):
+    """
+    Accept epoch seconds/ms, numeric string, or ISO string.
+    Returns int seconds (UTC-based epoch).
+    """
+    try:
+        if ts is None:
+            return None
+
+        if isinstance(ts, (int, float)):
+            ts_i = int(ts)
+            if ts_i > 10_000_000_000:
+                ts_i //= 1000
+            return ts_i
+
+        s = str(ts).strip()
+        if not s:
+            return None
+
+        if s.isdigit():
+            ts_i = int(s)
+            if ts_i > 10_000_000_000:
+                ts_i //= 1000
+            return ts_i
+
+        if s.endswith("Z"):
+            s = s[:-1] + "+00:00"
+        dt = datetime.fromisoformat(s)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return int(dt.timestamp())
+    except Exception:
+        return None
+
+def _get_tx_hash(cf: dict) -> str:
+    return str(
+        cf.get("tx_hash")
+        or cf.get("txHash")
+        or cf.get("transaction_hash")
+        or cf.get("transactionHash")
+        or ""
+    ).strip()
 
 # ================================
 # Cash flow helpers
@@ -17,7 +119,9 @@ def _norm_cf_type(t) -> str:
     s = str(t or "").strip().lower()
     s = s.replace("_", "-").replace(" ", "-")
     return s
-    norm_cf_type = _norm_cf_type
+
+# ✅ FIX: global alias (prevents "name 'norm_cf_type' is not defined")
+norm_cf_type = _norm_cf_type
 
 def _is_claimed_type(cf_type) -> bool:
     """
@@ -35,9 +139,6 @@ def _is_claimed_type(cf_type) -> bool:
 def is_claimed_type(cf_type) -> bool:
     return _is_claimed_type(cf_type)
 
-WETH_ADDR = "0x4200000000000000000000000000000000000006".lower()
-USDC_ADDR = "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913".lower()
-
 def _get_cf_token_addr(cf: dict, which: str) -> str:
     v = cf.get(which)
     if isinstance(v, dict):
@@ -52,13 +153,72 @@ def _get_cf_amount(cf: dict, which: str) -> float:
     else:
         return float(to_f(cf.get("collected_fees_token1") or cf.get("amount1") or 0.0, 0.0) or 0.0)
 
-def _iter_all_cash_flows(pos_all: list[dict]):
+def _iter_all_cash_flows(pos_all: List[dict]):
     for pos in (pos_all or []):
         for cf in (pos.get("cash_flows") or []):
             if isinstance(cf, dict):
                 yield cf
 
-def sum_confirmed_tokens_in_window(pos_all: list[dict], start_dt, end_dt):
+def ts_to_dt(ts):
+    if ts is None:
+        return None
+
+    # numeric (sec or ms)
+    if isinstance(ts, (int, float)):
+        x = float(ts)
+        if x > 1e12:
+            x /= 1000.0
+        return datetime.fromtimestamp(x, tz=JST)
+
+    # string ISO
+    if isinstance(ts, str):
+        s = ts.strip()
+        try:
+            if s.endswith("Z"):
+                s = s[:-1] + "+00:00"
+            return datetime.fromisoformat(s).astimezone(JST)
+        except Exception:
+            return None
+
+    return None
+
+def _get_cf_usd(cf: dict) -> float:
+    """
+    prices × amount でUSDを復元する（claimed-fees対策）
+    """
+    def _f(x, default=0.0):
+        try:
+            return float(x)
+        except Exception:
+            return default
+
+    prices = cf.get("prices") or {}
+    p0 = _f(((prices.get("token0") or {}).get("usd")), 0.0)
+    p1 = _f(((prices.get("token1") or {}).get("usd")), 0.0)
+
+    a0 = cf.get("amount0")
+    a1 = cf.get("amount1")
+    if a0 is None:
+        a0 = cf.get("collected_fees_token0")
+    if a1 is None:
+        a1 = cf.get("collected_fees_token1")
+
+    a0 = _f(a0, 0.0)
+    a1 = _f(a1, 0.0)
+
+    if (p0 > 0 or p1 > 0) and (a0 != 0.0 or a1 != 0.0):
+        return max(0.0, a0 * p0 + a1 * p1)
+
+    # fallback: try direct fields if ever present
+    for k in ("usd", "usd_value", "value_usd", "amount_usd", "valueUsd", "amountUsd"):
+        v = cf.get(k)
+        vv = _f(v, 0.0)
+        if vv > 0:
+            return vv
+
+    return 0.0
+
+def sum_confirmed_tokens_in_window(pos_all: List[dict], start_dt, end_dt):
     """
     confirmed (claimed-fees / fees-collected) を USD/WETH/USDC で合算
     窓は [start_dt, end_dt) / Noneは無制限
@@ -101,82 +261,19 @@ def sum_confirmed_tokens_in_window(pos_all: list[dict], start_dt, end_dt):
 
     return float(usd_total), float(weth_total), float(usdc_total)
 
-
-def _get_cf_usd(cf: dict) -> float:
-    # 既存：usd / usd_value / value_usd / amount_usd ... を拾う処理
-    # （ここはそのまま）
-
-    def _f(x, default=0.0):
-        try:
-            return float(x)
-        except Exception:
-            return default
-
-    # ここから追加：prices × amount でUSDを復元する（claimed-fees対策）
-    prices = cf.get("prices") or {}
-    p0 = _f(((prices.get("token0") or {}).get("usd")), 0.0)
-    p1 = _f(((prices.get("token1") or {}).get("usd")), 0.0)
-
-    # amount0/1 が無い形もあるので collected_fees_token0/1 も見る
-    a0 = cf.get("amount0")
-    a1 = cf.get("amount1")
-    if a0 is None:
-        a0 = cf.get("collected_fees_token0")
-    if a1 is None:
-        a1 = cf.get("collected_fees_token1")
-
-    a0 = _f(a0, 0.0)
-    a1 = _f(a1, 0.0)
-
-    if (p0 > 0 or p1 > 0) and (a0 != 0.0 or a1 != 0.0):
-        return max(0.0, a0 * p0 + a1 * p1)
-
-    return 0.0
-    amt0 = _to_float(cf.get("collected_fees_token0") or cf.get("amount0") or 0.0)
-    amt1 = _to_float(cf.get("collected_fees_token1") or cf.get("amount1") or 0.0)
-
-    usd = amt0 * usd0 + amt1 * usd1
-    return float(usd)
-
-from datetime import datetime
-
-def ts_to_dt(ts):
-    if ts is None:
-        return None
-
-    # 数値（秒 or ミリ秒）
-    if isinstance(ts, (int, float)):
-        x = float(ts)
-        if x > 1e12:  # ms対応
-            x /= 1000.0
-        return datetime.fromtimestamp(x, tz=JST)
-
-    # 文字列（ISO8601: 2026-02-14T11:13:59Z など）
-    if isinstance(ts, str):
-        s = ts.strip()
-        try:
-            if s.endswith("Z"):
-                s = s[:-1] + "+00:00"
-            return datetime.fromisoformat(s).astimezone(JST)
-        except Exception:
-            return None
-
-    return None
-from typing import Dict, List, Tuple
-
 def pick_confirmed_cf(cash_flows: List[dict], period_start: datetime, period_end: datetime) -> List[dict]:
+    """
+    cash_flows から confirmed-only を拾って、窓 [period_start, period_end) に入るものを
+    USD / amount_weth / amount_usdc 推定付きで rows 化して返す（重複排除あり）
+    """
     types = {}
     print("DBG cf sample keys:", list(cash_flows[0].keys()) if cash_flows else [], flush=True)
-    
+
     for r in cash_flows:
         t = str(r.get("type") or r.get("cash_flow_type") or r.get("event_type") or "").strip()
         types[t] = types.get(t, 0) + 1
 
     print("DBG cf types top:", sorted(types.items(), key=lambda x: -x[1])[:10], flush=True)
-
-    # ここから下は既存の本処理（rows = [] 〜 return rows）をそのまま
-    rows: List[dict] = []
-    ...
 
     def _to_f(x) -> float:
         try:
@@ -184,29 +281,29 @@ def pick_confirmed_cf(cash_flows: List[dict], period_start: datetime, period_end
         except Exception:
             return 0.0
 
-    # window debug（1回だけ）
     dbg("DBG pick_confirmed_cf window JST:", period_start, period_end)
 
+    rows: List[dict] = []
     passed = 0
-
-    passed = 0
-    shown = 0
-    
     shown = 0
 
     for cf in (cash_flows or []):
         if not isinstance(cf, dict):
             continue
-    
-        # ★必ず初期化（これで UnboundLocalError を潰す）
-        dt = None
-        t_norm = ""
-    
+
         t_norm = _norm_cf_type(cf.get("type"))
-        norm_cf_type = _norm_cf_type
-        dt = ts_to_dt(cf.get("timestamp"))
-    
-        # (任意) claimed-fees の dt を最初だけ表示
+        if not _is_claimed_type(t_norm):
+            continue
+
+        # timestamp key candidates
+        dt = (
+            ts_to_dt(cf.get("timestamp"))
+            or ts_to_dt(cf.get("ts"))
+            or ts_to_dt(cf.get("time"))
+            or ts_to_dt(cf.get("created_at"))
+            or ts_to_dt(cf.get("date"))
+        )
+
         if t_norm == "claimed-fees" and shown < 5:
             print(
                 "DBG claimed-fees dt check:",
@@ -216,17 +313,11 @@ def pick_confirmed_cf(cash_flows: List[dict], period_start: datetime, period_end
                 flush=True
             )
             shown += 1
-    
-        # ↓ window 判定（dt が None のときも安全）
+
         if not dt:
             continue
         if not (period_start <= dt < period_end):
             continue
-
-        # ここから下が「採用」ロジック
-        ...
-    
-        # ここからADD（rows.appendなど）
 
         passed += 1
 
@@ -266,7 +357,6 @@ def pick_confirmed_cf(cash_flows: List[dict], period_start: datetime, period_end
                 weth_amt = a1
                 usdc_amt = a0
 
-        # sample log（上位5件）
         if passed <= 5:
             dbg(
                 "DBG PASS sample",
@@ -295,7 +385,6 @@ def pick_confirmed_cf(cash_flows: List[dict], period_start: datetime, period_end
         tx = (r.get("tx_hash") or "").strip()
         nft = (r.get("nft_id") or "").strip()
         raw = r.get("raw") or {}
-
         fallback = str(raw.get("timestamp") or raw.get("date") or "")
         key = (tx, nft if nft else f"__no_nft__{fallback}")
         grouped.setdefault(key, []).append(r)
@@ -315,14 +404,434 @@ def pick_confirmed_cf(cash_flows: List[dict], period_start: datetime, period_end
 
     return picked
 
-_pick_confirmed_cf = pick_confirmed_cf
+# ================================
+# Telegram
+# ================================
+def send_telegram(text: str, chat_id: str):
+    token = os.getenv("TG_BOT_TOKEN")
+    if not token:
+        print("Telegram ENV missing: TG_BOT_TOKEN", flush=True)
+        return
+    if not chat_id:
+        print("Telegram chat_id missing", flush=True)
+        return
+
+    url = f"https://api.telegram.org/bot{token}/sendMessage"
+    max_len = 3800
+
+    s = str(text)
+    lines = s.split("\n")
+    chunks = []
+    buf = ""
+
+    for line in lines:
+        candidate = (buf + "\n" + line) if buf else line
+        if len(candidate) > max_len:
+            if buf:
+                chunks.append(buf)
+                buf = line
+            else:
+                chunks.append(line[:max_len])
+                buf = line[max_len:]
+        else:
+            buf = candidate
+
+    if buf:
+        chunks.append(buf)
+
+    for i, chunk in enumerate(chunks, 1):
+        r = requests.post(
+            url,
+            json={
+                "chat_id": chat_id,
+                "text": chunk,
+                "parse_mode": "HTML",
+                "disable_web_page_preview": True,
+            },
+            timeout=30,
+        )
+        dbg(f"Telegram part {i}/{len(chunks)} status:", r.status_code)
+        r.raise_for_status()
 
 # ================================
-# Constants
+# Sheets (429-safe)
 # ================================
-JST = timezone(timedelta(hours=9))
-REVERT_API = "https://api.revert.finance"
+def sheets_call(fn, *args, **kwargs):
+    for attempt in range(8):
+        try:
+            return fn(*args, **kwargs)
+        except Exception as e:
+            msg = str(e)
+            if "APIError: [429]" in msg or "Quota exceeded" in msg:
+                wait = 2 ** attempt
+                print(f"DBG: sheets 429 -> retry after {wait}s", flush=True)
+                time.sleep(wait)
+                continue
+            raise
+    raise RuntimeError("Sheets quota 429 retry exhausted")
 
+def get_gsheet_client():
+    creds = Credentials.from_service_account_file(
+        "gcp_service_account.json",
+        scopes=["https://www.googleapis.com/auth/spreadsheets"],
+    )
+    return gspread.authorize(creds)
+
+def open_sheet(client):
+    sheet_id = os.getenv("GOOGLE_SHEET_ID")
+    if not sheet_id:
+        raise RuntimeError("ENV missing: GOOGLE_SHEET_ID")
+    return client.open_by_key(sheet_id)
+
+def get_config_recipients_ws(sh):
+    tab_name = os.getenv("GOOGLE_SHEET_CONFIG_TAB", "CONFIG_RECIPIENTS")
+    return sh.worksheet(tab_name)
+
+def load_active_recipients_for_safe(sh, safe_name: str):
+    ws = get_config_recipients_ws(sh)
+    rows = sheets_call(ws.get_all_records) or []
+
+    result = []
+    for r in rows:
+        if str(r.get("safe_name", "")).strip() != safe_name:
+            continue
+        if not r.get("active"):
+            continue
+
+        pct_raw = str(r.get("pct", "")).replace("%", "").strip()
+        try:
+            pct = float(pct_raw) / 100.0
+        except Exception:
+            pct = 0.0
+
+        result.append({
+            "recipient_id": r.get("recipient_id"),
+            "name": r.get("name"),
+            "address": r.get("address"),
+            "pct": pct,
+        })
+
+    return result
+
+# ================================
+# Revert API (robust normalize)
+# ================================
+def fetch_positions(safe: str, active: bool = True):
+    url = f"{REVERT_API}/v1/positions/uniswapv3/account/{safe}"
+    params = {"active": "true" if active else "false", "with-v4": "true"}
+    r = requests.get(url, params=params, timeout=30)
+    dbg("DBG fetch_positions", "active=", active, "status=", r.status_code, "url=", r.url)
+
+    if r.status_code != 200:
+        dbg("DBG body:", r.text[:800])
+    r.raise_for_status()
+
+    js = r.json()
+    if isinstance(js, dict):
+        dbg("DBG resp keys:", list(js.keys())[:30])
+        for k in ("positions", "data", "result"):
+            v = js.get(k)
+            dbg(f"DBG key {k} type:", type(v).__name__, "len=", (len(v) if isinstance(v, list) else "n/a"))
+    else:
+        dbg("DBG resp type:", type(js).__name__, "len=", (len(js) if isinstance(js, list) else "n/a"))
+    return js
+
+def _normalize_positions(resp) -> List[dict]:
+    if isinstance(resp, list):
+        return [p for p in resp if isinstance(p, dict)]
+
+    if isinstance(resp, dict):
+        for k in ("positions", "data", "result"):
+            v = resp.get(k)
+            if isinstance(v, list):
+                return [p for p in v if isinstance(p, dict)]
+        v = resp.get("positions")
+        if isinstance(v, dict):
+            vv = v.get("data")
+            if isinstance(vv, list):
+                return [p for p in vv if isinstance(p, dict)]
+    return []
+
+# ================================
+# Net USD (underlying - debt)
+# ================================
+def extract_debt_usd(pos) -> float:
+    cfs = pos.get("cash_flows") or []
+    if not isinstance(cfs, list):
+        return 0.0
+
+    latest_td = None
+    latest_ts = -1
+    for cf in cfs:
+        if not isinstance(cf, dict):
+            continue
+        t = _lower(cf.get("type"))
+        if t not in ("lendor-borrow", "lendor-repay"):
+            continue
+        td = to_f(cf.get("total_debt"))
+        ts = _to_ts_sec(cf.get("timestamp")) or 0
+        if td is not None and ts >= latest_ts:
+            latest_ts = ts
+            latest_td = td
+
+    if latest_td is not None:
+        return max(float(latest_td), 0.0)
+
+    borrow = 0.0
+    repay = 0.0
+    for cf in cfs:
+        if not isinstance(cf, dict):
+            continue
+        t = _lower(cf.get("type"))
+        if t not in ("lendor-borrow", "lendor-repay"):
+            continue
+        v = (
+            to_f(cf.get("amount_usd"))
+            or to_f(cf.get("usd"))
+            or to_f(cf.get("value_usd"))
+            or to_f(cf.get("valueUsd"))
+            or to_f(cf.get("amountUsd"))
+        )
+        if v is None:
+            continue
+        v = abs(float(v))
+        if t == "lendor-borrow":
+            borrow += v
+        else:
+            repay += v
+
+    debt = borrow - repay
+    return debt if debt > 0 else 0.0
+
+def calc_net_usd(pos) -> Optional[float]:
+    pooled = to_f(pos.get("underlying_value"))
+    if pooled is None:
+        return None
+    debt = extract_debt_usd(pos)
+    return float(pooled) - float(debt)
+
+# ================================
+# APR (Revert)
+# ================================
+def get_revert_fee_apr(pos: dict) -> float:
+    v = to_f(pos.get("fee_apr"))
+    if v is not None:
+        return float(v)
+
+    perf = pos.get("performance") or {}
+    if isinstance(perf, dict):
+        v = to_f(perf.get("fee_apr"))
+        if v is not None:
+            return float(v)
+        hodl = perf.get("hodl") or {}
+        if isinstance(hodl, dict):
+            v = to_f(hodl.get("fee_apr"))
+            if v is not None:
+                return float(v)
+
+    return 0.0
+
+# ================================
+# Time (JST 00:00 close; send at 09:00)
+# ================================
+def get_period_end_jst(now: Optional[datetime] = None) -> datetime:
+    """
+    Daily end aligned to 00:00 JST.
+    """
+    if now is None:
+        now = datetime.now(JST)
+    else:
+        if now.tzinfo is None:
+            now = now.replace(tzinfo=JST)
+        else:
+            now = now.astimezone(JST)
+
+    anchor = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    if now < anchor:
+        anchor -= timedelta(days=1)
+    return anchor
+
+def get_weekly_period_end_jst(now: Optional[datetime] = None) -> datetime:
+    """
+    Weekly end aligned to Sunday 00:00 JST.
+    Returns most recent Sunday 00:00 JST.
+    """
+    if now is None:
+        now = datetime.now(JST)
+    else:
+        if now.tzinfo is None:
+            now = now.replace(tzinfo=JST)
+        else:
+            now = now.astimezone(JST)
+
+    # weekday: Mon=0 ... Sun=6
+    days_since_sun = (now.weekday() - 6) % 7
+    sun_0 = (now - timedelta(days=days_since_sun)).replace(hour=0, minute=0, second=0, microsecond=0)
+    if now < sun_0:
+        sun_0 -= timedelta(days=7)
+    return sun_0
+
+def pick_mode_auto(now: Optional[datetime] = None) -> str:
+    now = now or datetime.now(JST)
+    return "WEEKLY" if now.weekday() == 6 else "DAILY"
+
+def get_mode() -> str:
+    raw = (os.getenv("REPORT_MODE") or "").strip().upper()
+    if raw in ("DAILY", "WEEKLY"):
+        return raw
+    return pick_mode_auto()
+
+# ================================
+# NFT lines (UI rule)
+# ================================
+def build_nft_lines_revert_apr(pos_open: List[dict]) -> List[str]:
+    lines: List[str] = []
+    for pos in (pos_open or []):
+        nft_id = str(pos.get("nft_id") or "").strip()
+        if not nft_id:
+            continue
+
+        status = "RANGE OUT" if pos.get("in_range") is False else "ACTIVE"
+        net = float(to_f(calc_net_usd(pos), 0.0) or 0.0)
+        apr = float(get_revert_fee_apr(pos) or 0.0)
+
+        url = build_uniswap_link_base(nft_id)
+        nft_link = f'<a href="{h(url)}">{h(nft_id)}</a>'
+
+        lines.append(
+            f"{nft_link} | {h(status)}\n"
+            f"Net {fmt_money(net)} | APR {fmt_pct(apr)}"
+        )
+    return lines
+
+# ================================
+# Messages (Daily / Weekly)
+# ================================
+def build_daily_message(
+    safe_address: str,
+    period_end: datetime,
+    net_total: float,
+    pos_open: List[dict],
+    avg_confirmed_7d_usd: float,
+    mtd_confirmed_usd: float,
+    mtd_weth: float,
+    mtd_usdc: float,
+) -> str:
+    # 現在DEX手数料（Value）＝ uncollected now
+    uncollected_now_value = 0.0
+    for p in (pos_open or []):
+        try:
+            if p.get("fees_value") is not None:
+                uncollected_now_value += float(p.get("fees_value") or 0.0)
+            elif p.get("uncollected_fees_value") is not None:
+                uncollected_now_value += float(p.get("uncollected_fees_value") or 0.0)
+        except Exception:
+            pass
+
+    # APR（直近7日平均）＝ confirmed-only
+    apr_7d = (avg_confirmed_7d_usd / net_total) * 365.0 * 100.0 if net_total > 0 else 0.0
+
+    nft_lines = build_nft_lines_revert_apr(pos_open)
+    safe_link = fmt_safe_link(safe_address)
+
+    msg = (
+        "🚀 CBC Liquidity Mining — Daily\n"
+        f"Period End: {period_end.strftime('%Y-%m-%d %H:%M')} JST (LIVE)\n"
+        f"SAFE {safe_link}\n"
+        "──────────\n\n"
+        "🗓 現在DEX手数料（Value）\n"
+        f"{fmt_money(uncollected_now_value)}\n\n"
+        "📈 推定戦略APR（直近7日平均）\n"
+        f"{fmt_pct(apr_7d)}\n\n"
+        "🔒 現在Net運用額\n"
+        f"{fmt_money(net_total)}\n\n"
+        "──────────\n"
+        "🎉 月間累計 確定DEX手数料収益\n"
+        f"{mtd_weth:.6f} ETH  {mtd_usdc:,.2f} USDC\n"
+        f"{fmt_money(mtd_confirmed_usd)}（Value）\n\n"
+        "📆 1日あたり確定DEX手数料収益（直近7日平均）\n"
+        f"{fmt_money(avg_confirmed_7d_usd)}\n\n"
+        "──────────\n"
+        "📊 NFT Positions\n"
+        + ("\n\n".join(nft_lines) if nft_lines else "—")
+        + "\n"
+    )
+    return msg
+
+def build_weekly_message(
+    safe_address: str,
+    period_end: datetime,
+    net_total: float,
+    week_claimed: float,
+    prev_week_claimed: float,
+    mtd_confirmed: float,
+    all_confirmed: float,
+    week_weth: float = 0.0,
+    week_usdc: float = 0.0,
+    mtd_weth: float = 0.0,
+    mtd_usdc: float = 0.0,
+    all_weth: float = 0.0,
+    all_usdc: float = 0.0,
+    pos_open: Optional[List[dict]] = None,
+) -> str:
+    pos_open = pos_open or []
+
+    avg_claimed_day = week_claimed / 7.0 if week_claimed > 0 else 0.0
+
+    wow_txt = "—"
+    if prev_week_claimed > 0:
+        wow = ((week_claimed - prev_week_claimed) / prev_week_claimed) * 100.0
+        sign = "+" if wow >= 0 else ""
+        wow_txt = f"{sign}{wow:.1f}%"
+
+    safe_link = fmt_safe_link(safe_address)
+
+    # APR confirmed-only
+    apr_7d = (avg_claimed_day / net_total) * 365.0 * 100.0 if net_total > 0 else 0.0
+
+    nft_lines = build_nft_lines_revert_apr(pos_open)
+
+    msg = (
+        "🚀 CBC Liquidity Mining — Weekly Settlement\n"
+        f"Period End: {period_end.strftime('%Y-%m-%d %H:%M')} JST（FIX）\n"
+        f"SAFE {safe_link}\n"
+        "──────────\n\n"
+        "🎉 今週 確定DEX手数料収益\n"
+        f"{week_weth:.6f} ETH\n"
+        f"{week_usdc:,.2f} USDC\n"
+        f"{fmt_money(week_claimed)}\n"
+        f"（前週 {fmt_money(prev_week_claimed)} ／ {wow_txt}）\n\n"
+        "📆 1日あたり平均確定手数料収益\n"
+        f"{fmt_money(avg_claimed_day)}\n\n"
+        "🔒 現在Net運用額\n"
+        f"{fmt_money(net_total)}\n\n"
+        "──────────\n"
+        "📈 推定戦略 APR（直近7日平均）\n"
+        f"{fmt_pct(apr_7d)}\n\n"
+        "🗓 今月累計 確定DEX手数料収益\n"
+        f"{mtd_weth:.6f} ETH  {mtd_usdc:,.2f} USDC\n"
+        f"{fmt_money(mtd_confirmed)}\n\n"
+        "🏆 ALL-TIME 確定手数料収益\n"
+        f"{all_weth:.6f} ETH  {all_usdc:,.2f} USDC\n"
+        f"{fmt_money(all_confirmed)}\n\n"
+        "──────────\n"
+        "📊 NFT Positions\n"
+        + ("\n\n".join(nft_lines) if nft_lines else "—")
+        + "\n"
+    )
+    return msg
+
+# ================================
+# config
+# ================================
+def load_config():
+    path = os.environ.get("CONFIG_PATH", "config.json")
+    with open(path, "r", encoding="utf-8") as f:
+        return json.load(f)
+
+# ================================
+# Daily compute (Revert-only)
+# ================================
 def compute_daily_revert_metrics(
     safe_address: str,
     period_end: datetime,
@@ -338,7 +847,6 @@ def compute_daily_revert_metrics(
       mtd_weth,
       mtd_usdc
     """
-    # positions
     resp_open = fetch_positions(safe_address, active=True)
     resp_exited = fetch_positions(safe_address, active=False)
 
@@ -400,845 +908,30 @@ def compute_daily_revert_metrics(
         float(mtd_usdc),
     )
 
-
 # ================================
-# Small helpers
+# Weekly compute (confirmed-only + amounts)
 # ================================
-def h(x) -> str:
-    return html.escape(str(x), quote=True)
-
-
-def to_f(x, default=None):
-    try:
-        return float(x)
-    except Exception:
-        return default
-
-def _sum_weth_usdc_from_rows(rows: list) -> tuple[float, float]:
-    weth = 0.0
-    usdc = 0.0
-    for r in (rows or []):
-        raw = r.get("raw") or {}
-        t0 = (raw.get("token0_addr") or raw.get("token0") or "").lower()
-        t1 = (raw.get("token1_addr") or raw.get("token1") or "").lower()
-        a0 = float(raw.get("amount0") or 0.0)
-        a1 = float(raw.get("amount1") or 0.0)
-
-        if t0 == WETH_ADDR: weth += a0
-        if t1 == WETH_ADDR: weth += a1
-        if t0 == USDC_ADDR: usdc += a0
-        if t1 == USDC_ADDR: usdc += a1
-    return weth, usdc
-
-
-def fmt_money(x):
-    try:
-        return f"${float(x):,.2f}"
-    except Exception:
-        return "N/A"
-
-
-def fmt_pct(x):
-    try:
-        return f"{float(x):.2f}%"
-    except Exception:
-        return "N/A"
-
-
-def _lower(s):
-    return str(s or "").strip().lower()
-
-
-def build_basescan_addr_link(addr: str) -> str:
-    a = (addr or "").strip()
-    return f"https://basescan.org/address/{a}"
-
-
-def mask_safe_addr(addr: str) -> str:
-    a = (addr or "").strip()
-    if len(a) <= (2 + 5 + 4):
-        return a
-    return f"{a[:2+5]}*****{a[-4:]}"
-
-
-def fmt_safe_link(addr: str) -> str:
-    url = build_basescan_addr_link(addr)
-    label = mask_safe_addr(addr)
-    return f'<a href="{h(url)}">{h(label)}</a>'
-
-
-def build_uniswap_link_base(nft_id: str) -> str:
-    return f"https://app.uniswap.org/positions/v3/base/{nft_id}"
-
-
-def dbg(*args):
-    if (os.getenv("DEBUG") or "").strip() == "1":
-        print(*args, flush=True)
-
-
-def _to_ts_sec(ts):
-    """
-    Accept epoch seconds/ms, numeric string, or ISO string.
-    Returns int seconds (UTC-based epoch).
-    """
-    try:
-        if ts is None:
-            return None
-
-        if isinstance(ts, (int, float)):
-            ts_i = int(ts)
-            if ts_i > 10_000_000_000:
-                ts_i //= 1000
-            return ts_i
-
-        s = str(ts).strip()
-        if not s:
-            return None
-
-        if s.isdigit():
-            ts_i = int(s)
-            if ts_i > 10_000_000_000:
-                ts_i //= 1000
-            return ts_i
-
-        if s.endswith("Z"):
-            s = s[:-1] + "+00:00"
-        dt = datetime.fromisoformat(s)
-        if dt.tzinfo is None:
-            dt = dt.replace(tzinfo=timezone.utc)
-        return int(dt.timestamp())
-    except Exception:
-        return None
-
-
-def _get_tx_hash(cf: dict) -> str:
-    return str(
-        cf.get("tx_hash")
-        or cf.get("txHash")
-        or cf.get("transaction_hash")
-        or cf.get("transactionHash")
-        or ""
-    ).strip()
-
-def month_start_09_jst(period_end: datetime) -> datetime:
-    pe = period_end.astimezone(JST)
-    return datetime(pe.year, pe.month, 1, 9, 0, tzinfo=JST)
-
-
-# ================================
-# Time (JST 00:00 close; send at 09:00)
-# ================================
-def get_period_end_jst(now: Optional[datetime] = None) -> datetime:
-    """
-    Daily end aligned to 00:00 JST.
-    """
-    if now is None:
-        now = datetime.now(JST)
-    else:
-        if now.tzinfo is None:
-            now = now.replace(tzinfo=JST)
-        else:
-            now = now.astimezone(JST)
-
-    anchor = now.replace(hour=0, minute=0, second=0, microsecond=0)
-    if now < anchor:
-        anchor -= timedelta(days=1)
-    return anchor
-
-
-def get_weekly_period_end_jst(now: Optional[datetime] = None) -> datetime:
-    """
-    Weekly end aligned to Sunday 00:00 JST.
-    Returns most recent Sunday 00:00 JST (inclusive boundary).
-    """
-    if now is None:
-        now = datetime.now(JST)
-    else:
-        if now.tzinfo is None:
-            now = now.replace(tzinfo=JST)
-        else:
-            now = now.astimezone(JST)
-
-    # weekday: Mon=0 ... Sun=6
-    days_since_sun = (now.weekday() - 6) % 7
-    sun_0 = (now - timedelta(days=days_since_sun)).replace(hour=0, minute=0, second=0, microsecond=0)
-    if now < sun_0:
-        sun_0 -= timedelta(days=7)
-    return sun_0
-
-
-def pick_mode_auto(now: Optional[datetime] = None) -> str:
-    now = now or datetime.now(JST)
-    return "WEEKLY" if now.weekday() == 6 else "DAILY"
-
-
-def get_mode() -> str:
-    raw = (os.getenv("REPORT_MODE") or "").strip().upper()
-    if raw in ("DAILY", "WEEKLY"):
-        return raw
-    return pick_mode_auto()
-
-# ================================
-# Telegram
-# ================================
-def send_telegram(text: str, chat_id: str):
-    token = os.getenv("TG_BOT_TOKEN")
-    if not token:
-        print("Telegram ENV missing: TG_BOT_TOKEN", flush=True)
-        return
-    if not chat_id:
-        print("Telegram chat_id missing", flush=True)
-        return
-
-    url = f"https://api.telegram.org/bot{token}/sendMessage"
-    max_len = 3800
-
-    s = str(text)
-    lines = s.split("\n")
-    chunks = []
-    buf = ""
-
-    for line in lines:
-        candidate = (buf + "\n" + line) if buf else line
-        if len(candidate) > max_len:
-            if buf:
-                chunks.append(buf)
-                buf = line
-            else:
-                chunks.append(line[:max_len])
-                buf = line[max_len:]
-        else:
-            buf = candidate
-
-    if buf:
-        chunks.append(buf)
-
-    for i, chunk in enumerate(chunks, 1):
-        r = requests.post(
-            url,
-            json={
-                "chat_id": chat_id,
-                "text": chunk,
-                "parse_mode": "HTML",
-                "disable_web_page_preview": True,
-            },
-            timeout=30,
-        )
-        dbg(f"Telegram part {i}/{len(chunks)} status:", r.status_code)
-        r.raise_for_status()
-
-
-# ================================
-# Sheets (429-safe)
-# ================================
-def sheets_call(fn, *args, **kwargs):
-    for attempt in range(8):
-        try:
-            return fn(*args, **kwargs)
-        except Exception as e:
-            msg = str(e)
-            if "APIError: [429]" in msg or "Quota exceeded" in msg:
-                wait = 2 ** attempt
-                print(f"DBG: sheets 429 -> retry after {wait}s", flush=True)
-                time.sleep(wait)
-                continue
-            raise
-    raise RuntimeError("Sheets quota 429 retry exhausted")
-
-
-def get_gsheet_client():
-    creds = Credentials.from_service_account_file(
-        "gcp_service_account.json",
-        scopes=["https://www.googleapis.com/auth/spreadsheets"],
-    )
-    return gspread.authorize(creds)
-
-
-def open_sheet(client):
-    sheet_id = os.getenv("GOOGLE_SHEET_ID")
-    if not sheet_id:
-        raise RuntimeError("ENV missing: GOOGLE_SHEET_ID")
-    return client.open_by_key(sheet_id)
-
-# ---- WEEKLY_LOG (縦・追記のみ) ----
-def get_weekly_log_ws(sh):
-    tab_name = os.getenv("GOOGLE_SHEET_WEEKLY_LOG_TAB", "WEEKLY_LOG")
-    return sh.worksheet(tab_name)
-
-def get_weekly_payouts_ws(sh):
-    tab_name = os.getenv("GOOGLE_SHEET_PAYOUTS_TAB", "WEEKLY_PAYOUTS")
-    return sh.worksheet(tab_name)
-
-
-def ensure_weekly_log_header(ws):
-    values = sheets_call(ws.get_all_values) or []
-    if values and values[0] and (values[0][0] or "").strip().lower() == "week_ending_jst":
-        return
-    header = [
-        "week_ending_jst",
-        "safe_name",
-        "safe_address",
-        "confirmed_weth",
-        "confirmed_usdc",
-        "confirmed_usd_fix",
-        "created_at_jst",
-    ]
-    sheets_call(ws.update, range_name="A1", values=[header])
-    print("DBG: initialized WEEKLY_LOG header", flush=True)
-
-
-def append_weekly_log_row_once(
-    ws,
-    week_ending: datetime,
-    safe_name: str,
-    safe_address: str,
-    confirmed_weth: float,
-    confirmed_usdc: float,
-    confirmed_usd_fix: float,
-):
-    ensure_weekly_log_header(ws)
-
-    week_key = week_ending.strftime("%Y-%m-%d %H:%M")
-    safe_key = safe_address.strip().lower()
-
-    # 既存行チェック（上書きなし：同じ週×同じSAFEがあればスキップ）
-    values = sheets_call(ws.get_all_values) or []
-    rows = values[1:] if len(values) > 1 else []
-    for row in rows:
-        if len(row) < 3:
-            continue
-        if row[0].strip() == week_key and row[2].strip().lower() == safe_key:
-            print(f"DBG: WEEKLY_LOG skip existing week={week_key} safe={safe_name}", flush=True)
-            return
-
-    now_jst = datetime.now(JST).strftime("%Y-%m-%d %H:%M")
-    record = [
-        week_key,
-        safe_name,
-        safe_address,
-        f"{float(confirmed_weth):.8f}",
-        f"{float(confirmed_usdc):.6f}",
-        f"{float(confirmed_usd_fix):.2f}",
-        now_jst,
-    ]
-    sheets_call(ws.append_row, record, value_input_option="USER_ENTERED")
-    print(f"DBG: WEEKLY_LOG appended week={week_key} safe={safe_name}", flush=True)
-
-
-# ================================
-# Revert API (robust normalize)
-# ================================
-def fetch_positions(safe: str, active: bool = True):
-    url = f"{REVERT_API}/v1/positions/uniswapv3/account/{safe}"
-    params = {"active": "true" if active else "false", "with-v4": "true"}
-    r = requests.get(url, params=params, timeout=30)
-    dbg("DBG fetch_positions", "active=", active, "status=", r.status_code, "url=", r.url)
-
-    if r.status_code != 200:
-        dbg("DBG body:", r.text[:800])
-    r.raise_for_status()
-
-    js = r.json()
-    if isinstance(js, dict):
-        dbg("DBG resp keys:", list(js.keys())[:30])
-        for k in ("positions", "data", "result"):
-            v = js.get(k)
-            dbg(f"DBG key {k} type:", type(v).__name__, "len=", (len(v) if isinstance(v, list) else "n/a"))
-    else:
-        dbg("DBG resp type:", type(js).__name__, "len=", (len(js) if isinstance(js, list) else "n/a"))
-    return js
-
-
-def _normalize_positions(resp) -> List[dict]:
-    if isinstance(resp, list):
-        return [p for p in resp if isinstance(p, dict)]
-
-    if isinstance(resp, dict):
-        for k in ("positions", "data", "result"):
-            v = resp.get(k)
-            if isinstance(v, list):
-                return [p for p in v if isinstance(p, dict)]
-        v = resp.get("positions")
-        if isinstance(v, dict):
-            vv = v.get("data")
-            if isinstance(vv, list):
-                return [p for p in vv if isinstance(p, dict)]
-    return []
-
-
-# ================================
-# Net USD (underlying - debt)
-# ================================
-def extract_debt_usd(pos) -> float:
-    cfs = pos.get("cash_flows") or []
-    if not isinstance(cfs, list):
-        return 0.0
-
-    latest_td = None
-    latest_ts = -1
-    for cf in cfs:
-        if not isinstance(cf, dict):
-            continue
-        t = _lower(cf.get("type"))
-        if t not in ("lendor-borrow", "lendor-repay"):
-            continue
-        td = to_f(cf.get("total_debt"))
-        ts = _to_ts_sec(cf.get("timestamp")) or 0
-        if td is not None and ts >= latest_ts:
-            latest_ts = ts
-            latest_td = td
-
-    if latest_td is not None:
-        return max(float(latest_td), 0.0)
-
-    borrow = 0.0
-    repay = 0.0
-    for cf in cfs:
-        if not isinstance(cf, dict):
-            continue
-        t = _lower(cf.get("type"))
-        if t not in ("lendor-borrow", "lendor-repay"):
-            continue
-        v = (
-            to_f(cf.get("amount_usd"))
-            or to_f(cf.get("usd"))
-            or to_f(cf.get("value_usd"))
-            or to_f(cf.get("valueUsd"))
-            or to_f(cf.get("amountUsd"))
-        )
-        if v is None:
-            continue
-        v = abs(float(v))
-        if t == "lendor-borrow":
-            borrow += v
-        else:
-            repay += v
-
-    debt = borrow - repay
-    return debt if debt > 0 else 0.0
-
-
-def calc_net_usd(pos) -> Optional[float]:
-    pooled = to_f(pos.get("underlying_value"))
-    if pooled is None:
-        return None
-    debt = extract_debt_usd(pos)
-    return float(pooled) - float(debt)
-
-
-# ================================
-# APR (Revert)
-# ================================
-def get_revert_fee_apr(pos: dict) -> float:
-    v = to_f(pos.get("fee_apr"))
-    if v is not None:
-        return float(v)
-
-    perf = pos.get("performance") or {}
-    if isinstance(perf, dict):
-        v = to_f(perf.get("fee_apr"))
-        if v is not None:
-            return float(v)
-        hodl = perf.get("hodl") or {}
-        if isinstance(hodl, dict):
-            v = to_f(hodl.get("fee_apr"))
-            if v is not None:
-                return float(v)
-
-    return 0.0
-
-
-def safe_apr_weighted(pos_open: List[dict]) -> float:
-    total_net = 0.0
-    weighted = 0.0
-    for p in (pos_open or []):
-        net = float(to_f(calc_net_usd(p), 0.0) or 0.0)
-        if net <= 0:
-            continue
-        apr = float(get_revert_fee_apr(p) or 0.0)
-        total_net += net
-        weighted += apr * net
-    return (weighted / total_net) if total_net > 0 else 0.0
-
-
-# ================================
-# Confirmed fees aggregation (cash_flows)
-# ================================
-def _cf_iter(pos_all: List[dict]):
-    for pos in (pos_all or []):
-        if not isinstance(pos, dict):
-            continue
-        nft_id = str(pos.get("nft_id") or "UNKNOWN")
-        cfs = pos.get("cash_flows") or []
-        if not isinstance(cfs, list):
-            continue
-        for cf in cfs:
-            if isinstance(cf, dict):
-                yield nft_id, cf
-
-
-def calc_claimed_usd_in_window(pos_all: List[dict], start_dt: datetime, end_dt: datetime) -> Tuple[float, int]:
-    """
-    confirmed total in window: sum USD for fees-collected/claimed-fees.
-    Window: [start, end)
-    """
-    total = 0.0
-    count = 0
-    seen = set()
-
-    for nft_id, cf in _cf_iter(pos_all):
-        if not _is_claimed_type(cf.get("type")):
-            continue
-
-        ts = _to_ts_sec(cf.get("timestamp"))
-        if ts is None:
-            continue
-        ts_dt = datetime.fromtimestamp(ts, JST)
-        if ts_dt < start_dt or ts_dt >= end_dt:
-            continue
-
-        if os.getenv("DBG_CF_KEYS", "0") == "1":
-            print("DBG CF type:", cf.get("type"), flush=True)
-            print("DBG CF keys:", list(cf.keys()), flush=True)
-            print("DBG CF sample:", str(cf)[:800], flush=True)
-            # 1回だけ出して止める
-            os.environ["DBG_CF_KEYS"] = "0"
-
-        txh = _get_tx_hash(cf)
-        usd = _get_cf_usd(cf)
-        print("DBG ADD", cf.get("date"), cf.get("type"), "usd=", usd, "tx=", _get_tx_hash(cf), "nft=", nft_id, flush=True)
-        print("DBG cf.usd_calc:", usd, flush=True)
-        if usd is None or usd <= 0:
-            continue
-
-        # de-dup (same event can appear multiple times)
-        key = (txh, _norm_cf_type(cf.get("type")), nft_id, int(ts), round(float(usd), 6))
-        if key in seen:
-            continue
-        seen.add(key)
-
-        total += float(usd)
-        count += 1
-
-    return float(total), int(count)
-
-
-def calc_claimed_usd_by_nft_in_window(pos_all: List[dict], start_dt: datetime, end_dt: datetime) -> Dict[str, float]:
-    out: Dict[str, float] = {}
-    seen = set()
-
-    for nft_id, cf in _cf_iter(pos_all):
-        if not _is_claimed_type(cf.get("type")):
-            continue
-
-        ts = _to_ts_sec(cf.get("timestamp"))
-        if ts is None:
-            continue
-        ts_dt = datetime.fromtimestamp(ts, tz=timezone.utc).astimezone(JST)
-        if ts_dt < start_dt or ts_dt >= end_dt:
-            continue
-
-        usd = _get_cf_usd(cf)
-        print("DBG ADD", cf.get("date"), cf.get("type"), "usd=", usd, "tx=", _get_tx_hash(cf), "nft=", nft_id, flush=True)
-        if usd is None or usd <= 0:
-            continue
-
-        txh = _get_tx_hash(cf)
-        key = (txh, _norm_cf_type(cf.get("type")), nft_id)
-        if key in seen:
-            continue
-        seen.add(key)
-
-        out[nft_id] = float(out.get(nft_id, 0.0) or 0.0) + float(usd)
-
-    return out
-
-
-def calc_confirmed_all_time(pos_all: List[dict]) -> float:
-    total = 0.0
-    seen = set()
-    for nft_id, cf in _cf_iter(pos_all):
-        if not _is_claimed_type(cf.get("type")):
-            continue
-        ts = _to_ts_sec(cf.get("timestamp"))
-        if ts is None:
-            continue
-        usd = _get_cf_usd(cf)
-        if usd is None or usd <= 0:
-            continue
-        txh = _get_tx_hash(cf)
-        key = (txh, _norm_cf_type(cf.get("type")), nft_id, int(ts), round(float(usd), 6))
-        if key in seen:
-            continue
-        seen.add(key)
-        total += float(usd)
-    return float(total)
-
-
-def calc_confirmed_month_to_date(pos_all: List[dict], period_end: datetime) -> float:
-    pe = period_end.astimezone(JST)
-    start_month = pe.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
-    total, _ = calc_claimed_usd_in_window(pos_all, start_month, pe)
-    return float(total)
-
-
-# ================================
-# Metrics derived from Sheets log
-# (Daily emitted logic uses Sheets; Weekly MTD/ALLTIME uses Revert confirmed)
-# ================================
-def _row_safe_addr(row: List[str]) -> str:
-    return (row[2] if len(row) > 2 else "").strip().lower()
-
-
-def _row_period_dt(row: List[str]) -> Optional[datetime]:
-    return _parse_period_key(row[0] if row else "")
-
-
-def _row_val(row: List[str], idx: int) -> float:
-    if len(row) <= idx:
-        return 0.0
-    v = to_f(row[idx])
-    return float(v) if v is not None else 0.0
-
-
-def get_safe_history(rows: List[List[str]], safe_address: str) -> List[List[str]]:
-    sa = safe_address.strip().lower()
-    out = [r for r in rows if _row_safe_addr(r) == sa]
-    out.sort(key=lambda r: (_row_period_dt(r) or datetime(1970, 1, 1, tzinfo=JST)))
-    return out
-
-
-def sum_last_n_days(history: List[List[str]], n: int, value_col_idx: int) -> float:
-    if n <= 0:
-        return 0.0
-    tail = history[-n:] if len(history) >= n else history[:]
-    return sum(_row_val(r, value_col_idx) for r in tail)
-
-
-def sum_month_to_date(history: List[List[str]], period_end: datetime, value_col_idx: int) -> float:
-    m = period_end.astimezone(JST).month
-    y = period_end.astimezone(JST).year
-    total = 0.0
-    for r in history:
-        dt = _row_period_dt(r)
-        if not dt:
-            continue
-        dt = dt.astimezone(JST)
-        if dt.year == y and dt.month == m and dt <= period_end.astimezone(JST):
-            total += _row_val(r, value_col_idx)
-    return total
-
-
-def sum_all_time(history: List[List[str]], value_col_idx: int) -> float:
-    return sum(_row_val(r, value_col_idx) for r in history)
-
-
-def get_yesterday_unclaimed_from_history(history: List[List[str]]) -> float:
-    if not history:
-        return 0.0
-    if len(history) >= 2:
-        return _row_val(history[-2], 5)
-    return 0.0
-
-
-# ================================
-# NFT lines (UI rule)
-# ================================
-def build_nft_lines_revert_apr(pos_open: List[dict]) -> List[str]:
-    lines: List[str] = []
-    for pos in (pos_open or []):
-        nft_id = str(pos.get("nft_id") or "").strip()
-        if not nft_id:
-            continue
-
-        status = "RANGE OUT" if pos.get("in_range") is False else "ACTIVE"
-        net = float(to_f(calc_net_usd(pos), 0.0) or 0.0)
-        apr = float(get_revert_fee_apr(pos) or 0.0)
-
-        url = build_uniswap_link_base(nft_id)
-        nft_link = f'<a href="{h(url)}">{h(nft_id)}</a>'
-
-        lines.append(
-            f"{nft_link} | {h(status)}\n"
-            f"Net {fmt_money(net)} | APR {fmt_pct(apr)}"
-        )
-    return lines
-
-
-# ================================
-# Messages (Daily / Weekly)
-# ================================
-def build_daily_message(
-    safe_address: str,
-    period_end: datetime,
-    net_total: float,
-    emitted_today: float,  # 互換（未使用）
-    history: List[List[str]],  # 互換（未使用）
-    pos_open: List[dict],
-    avg_confirmed_7d_usd: float,
-    mtd_confirmed_usd: float,
-    mtd_weth: float,
-    mtd_usdc: float,
-) -> str:
-    # 現在DEX手数料（Value）＝ uncollected now
-    uncollected_now_value = 0.0
-    for p in (pos_open or []):
-        try:
-            if p.get("fees_value") is not None:
-                uncollected_now_value += float(p.get("fees_value") or 0.0)
-            elif p.get("uncollected_fees_value") is not None:
-                uncollected_now_value += float(p.get("uncollected_fees_value") or 0.0)
-        except Exception:
-            pass
-
-    # APR（直近7日平均）＝ confirmed-only
-    apr_7d = (avg_confirmed_7d_usd / net_total) * 365.0 * 100.0 if net_total > 0 else 0.0
-
-    nft_lines = build_nft_lines_revert_apr(pos_open)
-    safe_link = fmt_safe_link(safe_address)
-
-    msg = (
-        "🚀 CBC Liquidity Mining — Daily\n"
-        f"Period End: {period_end.strftime('%Y-%m-%d %H:%M')} JST (LIVE)\n"
-        f"SAFE {safe_link}\n"
-        "──────────\n\n"
-        "🗓 現在DEX手数料（Value）\n"
-        f"{fmt_money(uncollected_now_value)}\n\n"
-        "📈 推定戦略APR（直近7日平均）\n"
-        f"{fmt_pct(apr_7d)}\n\n"
-        "🔒 現在Net運用額\n"
-        f"{fmt_money(net_total)}\n\n"
-        "──────────\n"
-        "🎉 月間累計 確定DEX手数料収益\n"
-        f"{mtd_weth:.6f} ETH  {mtd_usdc:,.2f} USDC\n"
-        f"{fmt_money(mtd_confirmed_usd)}（Value）\n\n"
-        "📆 1日あたり確定DEX手数料収益（直近7日平均）\n"
-        f"{fmt_money(avg_confirmed_7d_usd)}\n\n"
-        "──────────\n"
-        "📊 NFT Positions\n"
-        + ("\n\n".join(nft_lines) if nft_lines else "—")
-        + "\n"
-    )
-    return msg
-
-def build_weekly_message(
-    safe_address: str,
-    period_end: datetime,
-    net_total: float,
-    week_claimed: float,
-    prev_week_claimed: float,
-    mtd_confirmed: float,
-    all_confirmed: float,
-    # 追加：枚数（無ければ 0.0 を渡せばOK）
-    week_weth: float = 0.0,
-    week_usdc: float = 0.0,
-    mtd_weth: float = 0.0,
-    mtd_usdc: float = 0.0,
-    all_weth: float = 0.0,
-    all_usdc: float = 0.0,
-    pos_open: List[dict] = None,
-) -> str:
-    pos_open = pos_open or []
-
-    avg_claimed_day = week_claimed / 7.0 if week_claimed > 0 else 0.0
-
-    wow_txt = "—"
-    if prev_week_claimed > 0:
-        wow = ((week_claimed - prev_week_claimed) / prev_week_claimed) * 100.0
-        sign = "+" if wow >= 0 else ""
-        wow_txt = f"{sign}{wow:.1f}%"
-
-    safe_link = fmt_safe_link(safe_address)
-
-    # APRは confirmed-only に寄せる（安定）
-    apr_7d = (avg_claimed_day / net_total) * 365.0 * 100.0 if net_total > 0 else 0.0
-
-    # NFT linesはそのまま（見やすいなら残す）
-    nft_lines = build_nft_lines_revert_apr(pos_open)
-
-    msg = (
-        "🚀 CBC Liquidity Mining — Weekly Settlement\n"
-        f"Period End: {period_end.strftime('%Y-%m-%d %H:%M')} JST（FIX）\n"
-        f"SAFE {safe_link}\n"
-        "──────────\n\n"
-        "🎉 今週 確定DEX手数料収益\n"
-        f"{week_weth:.6f} ETH\n"
-        f"{week_usdc:,.2f} USDC\n"
-        f"{fmt_money(week_claimed)}\n"
-        f"（前週 {fmt_money(prev_week_claimed)} ／ {wow_txt}）\n\n"
-        "📆 1日あたり平均確定手数料収益\n"
-        f"{fmt_money(avg_claimed_day)}\n\n"
-        "🔒 現在Net運用額\n"
-        f"{fmt_money(net_total)}\n\n"
-        "──────────\n"
-        "📈 推定戦略 APR（直近7日平均）\n"
-        f"{fmt_pct(apr_7d)}\n\n"
-        "🗓 今月累計 確定DEX手数料収益\n"
-        f"{mtd_weth:.6f} ETH  {mtd_usdc:,.2f} USDC\n"
-        f"{fmt_money(mtd_confirmed)}\n\n"
-        "🏆 ALL-TIME 確定手数料収益\n"
-        f"{all_weth:.6f} ETH  {all_usdc:,.2f} USDC\n"
-        f"{fmt_money(all_confirmed)}\n\n"
-        "──────────\n"
-        "📊 NFT Positions\n"
-        + ("\n\n".join(nft_lines) if nft_lines else "—")
-        + "\n"
-    )
-    return msg
-
-
-# ================================
-# config
-# ================================
-def load_config():
-    path = os.environ.get("CONFIG_PATH", "config.json")
-    with open(path, "r", encoding="utf-8") as f:
-        return json.load(f)
-
-
-# ================================
-# Core compute
-# ================================
-def compute_today_metrics(
-    safe_address: str,
-    period_end: datetime,
-) -> Tuple[List[dict], List[dict], float, float, float]:
-    """
-    Returns:
-      pos_open, pos_all, net_total_usd, claimed_24h_usd, unclaimed_usd
-    """
-    start_dt = period_end - timedelta(days=1)
-
-    resp_open = fetch_positions(safe_address, active=True)
-    resp_exited = fetch_positions(safe_address, active=False)
-
-    pos_open = _normalize_positions(resp_open)
-    pos_exited = _normalize_positions(resp_exited)
-    pos_all = pos_open + pos_exited
-
-    dbg("DBG today normalize open/exited lens:", len(pos_open), len(pos_exited))
-    if len(pos_open) == 0:
-        dbg("DBG today open raw (first 800):", str(resp_open)[:800])
-
-    net_total = 0.0
-    unclaimed = 0.0
-    for pos in (pos_open or []):
-        net = calc_net_usd(pos)
-        net_total += float(net) if net is not None else 0.0
-        unclaimed += float(to_f(pos.get("fees_value"), 0.0) or 0.0)
-
-    claimed_24h, _tx_24h = calc_claimed_usd_in_window(pos_all, start_dt, period_end)
-
-    return pos_open, pos_all, float(net_total), float(claimed_24h), float(unclaimed)
-
-
 def compute_weekly_confirmed_metrics(
     safe_address: str,
     period_end: datetime,
-) -> Tuple[List[dict], float, Dict[str, float], float, float, float, float]:
+) -> Tuple[
+    List[dict], float, Dict[str, float],
+    float, float,
+    float, float,
+    float, float,
+    float, float,
+    float, float
+]:
     """
     Returns:
-      pos_open, net_total, confirmed_by_nft_7d, week_total, prev_week_total, mtd_confirmed, all_time_confirmed
+      pos_open,
+      net_total,
+      confirmed_by_nft_7d (legacy map; may be empty),
+      week_total_usd, prev_week_total_usd,
+      mtd_confirmed_usd, all_confirmed_usd,
+      week_weth, week_usdc,
+      mtd_weth, mtd_usdc,
+      all_weth, all_usdc
     """
     start_this = period_end - timedelta(days=7)
     end_this = period_end
@@ -1251,57 +944,9 @@ def compute_weekly_confirmed_metrics(
     pos_open = _normalize_positions(resp_open)
     pos_exited = _normalize_positions(resp_exited)
     pos_all = pos_open + pos_exited
-        # --- cash_flows を安全に集める（必ず定義しておく） ---
+
+    # cash_flows all（まず集める）
     cash_flows_all: List[dict] = []
-    for pos in (pos_all or []):
-        cfs = pos.get("cash_flows") or []
-        if isinstance(cfs, list):
-            cash_flows_all.extend(cfs)
-
-    net_total = 0.0
-    for pos in pos_open:
-        net_total += float(to_f(calc_net_usd(pos), 0.0) or 0.0)
-
-    confirmed_by_nft_7d = calc_claimed_usd_by_nft_in_window(pos_all, start_this, end_this)
-    confirmed_by_nft_prev = calc_claimed_usd_by_nft_in_window(pos_all, start_prev, end_prev)
-
-    week_total = float(sum((confirmed_by_nft_7d or {}).values()))
-    prev_week_total = float(sum((confirmed_by_nft_prev or {}).values()))
-    
-    # =========================
-    # ここから追加
-    # =========================
-    dbg("DBG cash_flows_all len", len(cash_flows_all))
-    dbg("DBG WEEK WINDOW start/end JST:", start_this, end_this)
-    week_rows = pick_confirmed_cf(cash_flows_all, start_this, end_this)
-    week_weth = sum(r.get("amount_weth", 0.0) for r in week_rows)
-    week_usdc = sum(r.get("amount_usdc", 0.0) for r in week_rows)
-    week_total = sum(r.get("usd", 0.0) for r in week_rows)
-    print("DBG WEEK SUM",
-      "weth=", week_weth,
-      "usdc=", week_usdc,
-      "usd=", week_total,
-      flush=True)
-    
-    dbg("DBG week_rows len", len(week_rows))
-    if week_rows:
-        dbg("DBG week_row keys", list(week_rows[0].keys()))
-        dbg("DBG week_row sample", str(week_rows[0])[:1200])
-
-# =========================
-# 追加ここまで
-# =========================
-    
-    # --- MTD / ALL confirmed (period_end基準で統一) ---
-    month_start = datetime(
-        period_end.astimezone(JST).year,
-        period_end.astimezone(JST).month,
-        1, 0, 0,
-        tzinfo=JST
-    )
-    
-    # pos_all から cash_flows を集める
-    cash_flows_all = []
     for pos in (pos_all or []):
         pos_nft = str(pos.get("nft_id") or "").strip()
         cfs = pos.get("cash_flows") or []
@@ -1309,32 +954,69 @@ def compute_weekly_confirmed_metrics(
             continue
         for cf in cfs:
             if isinstance(cf, dict) and pos_nft:
-                # cf側にnft_idが無い/空なら pos由来を補完
                 if not (cf.get("nft_id") or cf.get("token_id")):
                     cf["_pos_nft_id"] = pos_nft
             cash_flows_all.append(cf)
-    # --- MTD ---
+
+    # net_total open-only
+    net_total = 0.0
+    for pos in (pos_open or []):
+        net_total += float(to_f(calc_net_usd(pos), 0.0) or 0.0)
+
+    # 週合計（USD/WETH/USDC）
+    dbg("DBG cash_flows_all len", len(cash_flows_all))
+    dbg("DBG WEEK WINDOW start/end JST:", start_this, end_this)
+
+    week_rows = pick_confirmed_cf(cash_flows_all, start_this, end_this)
+    week_weth = float(sum(r.get("amount_weth", 0.0) for r in week_rows))
+    week_usdc = float(sum(r.get("amount_usdc", 0.0) for r in week_rows))
+    week_total = float(sum(r.get("usd", 0.0) for r in week_rows))
+
+    prev_rows = pick_confirmed_cf(cash_flows_all, start_prev, end_prev)
+    prev_week_total = float(sum(r.get("usd", 0.0) for r in prev_rows))
+
+    print("DBG WEEK SUM",
+          "weth=", week_weth,
+          "usdc=", week_usdc,
+          "usd=", week_total,
+          flush=True)
+
+    # MTD / ALL
+    month_start = datetime(
+        period_end.astimezone(JST).year,
+        period_end.astimezone(JST).month,
+        1, 0, 0,
+        tzinfo=JST
+    )
+
     mtd_rows = pick_confirmed_cf(cash_flows_all, month_start, period_end)
-    
     mtd_confirmed = float(sum((r.get("usd") or 0.0) for r in mtd_rows))
     mtd_weth = float(sum((r.get("amount_weth") or 0.0) for r in mtd_rows))
     mtd_usdc = float(sum((r.get("amount_usdc") or 0.0) for r in mtd_rows))
-    # --- ALL ---
+
     all_start = datetime(2020, 1, 1, tzinfo=JST)
     all_rows = pick_confirmed_cf(cash_flows_all, all_start, period_end)
-    
     all_confirmed = float(sum((r.get("usd") or 0.0) for r in all_rows))
     all_weth = float(sum((r.get("amount_weth") or 0.0) for r in all_rows))
     all_usdc = float(sum((r.get("amount_usdc") or 0.0) for r in all_rows))
+
     dbg("DBG weekly confirmed this/prev:", week_total, prev_week_total)
     dbg("DBG weekly mtd/all:", mtd_confirmed, all_confirmed)
+
+    # legacy map (optional / keep interface)
+    confirmed_by_nft_7d: Dict[str, float] = {}
+    for r in week_rows:
+        nft = str(r.get("nft_id") or "").strip()
+        if not nft:
+            continue
+        confirmed_by_nft_7d[nft] = float(confirmed_by_nft_7d.get(nft, 0.0) or 0.0) + float(r.get("usd") or 0.0)
 
     return (
         pos_open,
         float(net_total),
         confirmed_by_nft_7d,
-        week_total,
-        prev_week_total,
+        float(week_total),
+        float(prev_week_total),
         float(mtd_confirmed),
         float(all_confirmed),
         float(week_weth),
@@ -1344,48 +1026,10 @@ def compute_weekly_confirmed_metrics(
         float(all_weth),
         float(all_usdc),
     )
-# ここまでが各種 helper関数たち
 
-def get_weekly_log_ws(sh):
-    tab_name = os.getenv("GOOGLE_SHEET_WEEKLY_LOG_TAB", "WEEKLY_LOG")
-    return sh.worksheet(tab_name)
-
-
-def get_config_recipients_ws(sh):
-    tab_name = os.getenv("GOOGLE_SHEET_CONFIG_TAB", "CONFIG_RECIPIENTS")
-    return sh.worksheet(tab_name)
-
-
-def load_active_recipients_for_safe(sh, safe_name: str):
-    ws = get_config_recipients_ws(sh)
-    rows = sheets_call(ws.get_all_records) or []
-
-    result = []
-    for r in rows:
-        if str(r.get("safe_name", "")).strip() != safe_name:
-            continue
-        if not r.get("active"):
-            continue
-
-        pct_raw = str(r.get("pct", "")).replace("%", "").strip()
-        try:
-            pct = float(pct_raw) / 100.0
-        except Exception:
-            pct = 0.0
-
-        result.append({
-            "recipient_id": r.get("recipient_id"),
-            "name": r.get("name"),
-            "address": r.get("address"),
-            "pct": pct,
-        })
-
-    return result
-
-
-# ここから main
-def main():
-    ...
+# ================================
+# main
+# ================================
 def main():
     mode = get_mode()
     print(f"DBG MODE={mode}", flush=True)
@@ -1446,49 +1090,46 @@ def main():
                     all_usdc=all_usdc,
                     pos_open=pos_open,
                 )
-                # ===== Payout block（ここに入れる）=====
-                if mode == "WEEKLY":
-                    continue
-            # ---- payout (WEEKLY only) ----
-                    client = get_gsheet_client()
-                    sh = open_sheet(client)
-                    ws_payouts = sh.worksheet(os.getenv("GOOGLE_SHEET_PAYOUTS_TAB", "WEEKLY_PAYOUTS"))
-                    
-                    recipients = load_active_recipients_for_safe(sh, safe_name)
-                    
-                    total_usdc_base = float(week_claimed)  # 原資(USDC扱い)
-                    
-                    pay_recipients = [
-                        r for r in recipients
-                        if str(r.get("recipient_id", "")).lower() != "system"
+
+                # ---- payout (WEEKLY only) ----
+                client = get_gsheet_client()
+                sh = open_sheet(client)
+                ws_payouts = sh.worksheet(os.getenv("GOOGLE_SHEET_PAYOUTS_TAB", "WEEKLY_PAYOUTS"))
+
+                recipients = load_active_recipients_for_safe(sh, safe_name)
+
+                total_usdc_base = float(week_claimed)  # 原資(USDC扱い)
+                pay_recipients = [
+                    r for r in recipients
+                    if str(r.get("recipient_id", "")).lower() != "system"
+                ]
+                sum_pay_pct = sum(float(r.get("pct", 0.0)) for r in pay_recipients)
+
+                week_key = period_end.strftime("%Y-%m-%d %H:%M")
+                created_at = datetime.now(JST).strftime("%Y-%m-%d %H:%M")
+
+                for r in pay_recipients:
+                    pct = float(r.get("pct", 0.0))
+                    pct_norm = (pct / sum_pay_pct) if sum_pay_pct > 0 else 0.0
+                    amount = round(total_usdc_base * pct_norm, 6)
+
+                    row = [
+                        week_key,
+                        safe_name,
+                        safe_address,
+                        r.get("recipient_id"),
+                        r.get("name"),
+                        r.get("address"),
+                        amount,
+                        created_at,
                     ]
-                    
-                    sum_pay_pct = sum(float(r.get("pct", 0.0)) for r in pay_recipients)
-                    
-                    week_key = period_end.strftime("%Y-%m-%d %H:%M")
-                    created_at = datetime.now(JST).strftime("%Y-%m-%d %H:%M")
-                    
-                    for r in pay_recipients:
-                        pct = float(r.get("pct", 0.0))
-                        pct_norm = (pct / sum_pay_pct) if sum_pay_pct > 0 else 0.0  # 90%→100%に正規化
-                        amount = round(total_usdc_base * pct_norm, 6)
-                        
-                        row = [
-                            week_key,
-                            safe_name,
-                            safe_address,
-                            r.get("recipient_id"),
-                            r.get("name"),
-                            r.get("address"),
-                            amount,
-                            created_at,
-                        ]
-                        
-                        sheets_call(ws_payouts.append_row, row, value_input_option="USER_ENTERED")
-                        # Telegramは最後に1回
-                    print(f"DBG before send_telegram mode={mode} name={safe_name} chat_id={chat_id} msg_len={len(msg) if msg else 0}", flush=True)
-                    send_telegram(msg, chat_id)
-                
+                    sheets_call(ws_payouts.append_row, row, value_input_option="USER_ENTERED")
+
+                print(f"DBG before send_telegram mode={mode} name={safe_name} chat_id={chat_id} msg_len={len(msg)}", flush=True)
+                send_telegram(msg, chat_id)
+
+                continue  # ✅ weeklyはdailyへ落とさない
+
             # ================================
             # DAILY (LIVE, REVERT-only)
             # ================================
@@ -1506,8 +1147,6 @@ def main():
                 safe_address=safe_address,
                 period_end=period_end,
                 net_total=net_total,
-                emitted_today=0.0,
-                history=[],
                 pos_open=pos_open,
                 avg_confirmed_7d_usd=avg_confirmed_7d_usd,
                 mtd_confirmed_usd=mtd_confirmed_usd,
@@ -1525,7 +1164,6 @@ def main():
                 )
             except Exception:
                 pass
-
 
 if __name__ == "__main__":
     main()
