@@ -17,7 +17,7 @@ def _norm_cf_type(t) -> str:
     s = str(t or "").strip().lower()
     s = s.replace("_", "-").replace(" ", "-")
     return s
-
+    norm_cf_type = _norm_cf_type
 
 def _is_claimed_type(cf_type) -> bool:
     """
