@@ -1220,7 +1220,7 @@ def main():
                         f"- recipients(active): {len(recipients)}"
                     )
 
-                    # 集約グループへ（ENV優先）: CSVはCSVHUBだけに送る
+               # 集約グループへ（ENV優先）: CSVはCSVHUBだけに送る
                 try:
                     if csv_hub_chat_id:
                         send_telegram_file(csv_path, chat_id=csv_hub_chat_id, caption=caption)
@@ -1230,7 +1230,7 @@ def main():
                 except Exception as e:
                     print(f"DBG HUB CSV FAILED: {e}", flush=True)
                 
-                # ✅ SAFEグループへはCSVも通知も一切送らない（スッキリ版）
+                # ✅ SAFEグループへはCSVも通知も一切送らない（完全OFF）
                 # send_telegram_file(csv_path, chat_id=chat_id, caption=caption)
                 # send_telegram(..., chat_id=chat_id)
                 
@@ -1238,7 +1238,6 @@ def main():
                 if _env("PAYOUTS_TO_SHEET", "0") == "1":
                     ws_payouts = get_weekly_payouts_ws(sh)
                 
-                    # ✅ シート記録は「0円除外」(remainderは残すのOK)
                     sheet_rows = [
                         r for r in payout_rows
                         if isinstance(r, list)
@@ -1246,18 +1245,6 @@ def main():
                         and float(r[AMTIDX] or 0.0) > 0.0
                     ]
                     append_weekly_payout_rows_once(ws_payouts, sheet_rows, period_end, safe_address)
-
-                    # 確認メッセージ（テキスト）
-                    send_telegram(
-                        "✅ Payout prepared\n"
-                        f"- week_end: {h(period_end.strftime('%Y-%m-%d %H:%M'))} JST\n"
-                        f"- csv: {h(csv_name)} (attached)\n"
-                        f"- confirmed(FIX): {h(fmt_money(week_claimed))}\n"
-                        f"- payout_pct_sum: {h(pct_sum)}%\n"
-                        f"- remain_in_safe: {h(fmt_money(remain))}\n"
-                        f"- recipients(active): {h(len(recipients))}",
-                        chat_id=chat_id,
-                    )
 
             else:
                 (
