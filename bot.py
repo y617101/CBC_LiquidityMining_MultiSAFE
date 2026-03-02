@@ -1178,6 +1178,26 @@ def main():
                     csv_name = f"payout_{safe_name}_{period_end.strftime('%Y-%m-%d')}.csv"
                     csv_path = write_csv(payout_rows, f"/tmp/{csv_name}")
                     print(f"DBG PAYOUT CSV: {csv_path} pct_sum={pct_sum} remain={remain}", flush=True)
+                    # ---- CSVをTelegramにファイル添付 ----
+                    caption = (
+                        f"📦 {safe_name} payout\n"
+                        "✅ Payout prepared\n"
+                        f"- week_end: {period_end.strftime('%Y-%m-%d %H:%M')} JST\n"
+                        f"- confirmed(FIX): {fmt_money(week_claimed)}\n"
+                        f"- payout_pct_sum: {pct_sum:.1f}%\n"
+                        f"- remain_in_safe: {fmt_money(remain)}\n"
+                        f"- recipients: {len(recipients)}"
+                    )
+                    
+                    # 集約グループへ
+                    try:
+                        send_telegram_file(csv_path, chat_id="@csvhub", caption=caption)
+                        print(f"DBG HUB CSV SENT: {safe_name}", flush=True)
+                    except Exception as e:
+                        print(f"DBG HUB CSV FAILED: {e}", flush=True)
+                    
+                    # 各SAFEグループへ
+                    send_telegram_file(csv_path, chat_id=chat_id, caption=caption)
 
                     # Optional: write to WEEKLY_PAYOUTS sheet
                     if _env("PAYOUTS_TO_SHEET", "0") == "1":
