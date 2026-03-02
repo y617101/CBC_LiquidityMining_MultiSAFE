@@ -1260,7 +1260,7 @@ def main():
                 )
 
                 # Weekly message
-                send_telegram(msg, chat_id=chat_id)
+                #send_telegram(msg, chat_id=chat_id)
 
                 # payout CSV (optional)
                 if _env("PAYOUT_CSV", "0") == "1":
@@ -1367,7 +1367,7 @@ def main():
                     mtd_weth=mtd_weth,
                     mtd_usdc=mtd_usdc,
                 )
-                send_telegram(msg, chat_id=chat_id)
+                #send_telegram(msg, chat_id=chat_id)
 
         except Exception as e:
             err = (
