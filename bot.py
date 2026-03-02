@@ -1110,6 +1110,8 @@ def main():
 
     print("DBG period_end JST:", period_end.strftime("%Y-%m-%d %H:%M"), flush=True)
 
+    import time
+    
     for s in safes:
         safe_name = (s.get("name") or "NONAME").strip()
         safe_address = (s.get("safe_address") or "").strip()
@@ -1239,6 +1241,7 @@ def main():
                 )
             except Exception:
                 pass
+            time.sleep(1)
 
 if __name__ == "__main__":
     main()
