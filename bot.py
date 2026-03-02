@@ -1176,50 +1176,50 @@ def main():
                 client = get_gsheet_client()
                 sh = open_sheet(client)
                 
-                # ✅ WEEKLY_LOG に 1行書く（週×SAFEで重複はスキップ）
-                ws_weekly_log = get_weekly_log_ws(sh)
-                append_weekly_log_row_once(
-                    ws_weekly_log,
-                    week_ending=period_end,
-                    safe_name=safe_name,
-                    safe_address=safe_address,
-                    confirmed_weth=week_weth,
-                    confirmed_usdc=week_usdc,
-                    confirmed_usd_fix=week_claimed,  # USD(FIX)
-                )
-                # ---- payout CSV (WEEKLY only) ----
-if _env("PAYOUT_CSV", "0") == "1":
-    # CONFIG_RECIPIENTS から、このSAFEのactive=TRUEだけ読む（SAFE内に残す分は配らない）
-    recipients = load_active_recipients_for_safe(sh, safe_name=safe_name)
+                        # ✅ WEEKLY_LOG に 1行書く（週×SAFEで重複回避）
+        ws_weekly_log = get_weekly_log_ws(sh)
+        append_weekly_log_row_once(
+            ws_weekly_log,
+            week_ending=period_end,
+            safe_name=safe_name,
+            safe_address=safe_address,
+            confirmed_weth=week_weth,
+            confirmed_usdc=week_usdc,
+            confirmed_usd_fix=week_claimed,
+        )
 
-    pct_sum = round(sum(float(r.get("pct", 0) or 0) for r in recipients), 6)
-    payout_base_usd = round(float(week_claimed) * (pct_sum / 100.0), 2)   # 配当原資（USD 2桁）
-    remain_in_safe_usd = round(float(week_claimed) - payout_base_usd, 2)  # SAFEに残す分（送らない）
+            # ---- payout CSV (WEEKLY only) ----
+            if _env("PAYOUT_CSV", "0") == "1":
+            recipients = load_active_recipients_for_safe(sh, safe_name=safe_name)
 
-    payout_rows = build_weekly_payout_rows_usd2_owner_remainder(
-        week_ending=period_end.date(),
-        safe_name=safe_name,
-        safe_address=safe_address,
-        week_confirmed_usd=payout_base_usd,  # ★配るのはactive分だけ
-        recipients=recipients,
-    )
+            pct_sum = round(sum(float(r.get("pct", 0) or 0) for r in recipients), 6)
+            payout_base_usd = round(float(week_claimed) * (pct_sum / 100.0), 2)
+            remain_in_safe_usd = round(float(week_claimed) - payout_base_usd, 2)
 
-    csv_name = f"payout_{safe_name}_{period_end.strftime('%Y-%m-%d')}.csv"
-    csv_path = write_csv(payout_rows, f"/tmp/{csv_name}")
+            payout_rows = build_weekly_payout_rows_usd2_owner_remainder(
+                week_ending=period_end.date(),
+                safe_name=safe_name,
+                safe_address=safe_address,
+                week_confirmed_usd=payout_base_usd,
+                recipients=recipients,
+            )
 
-    print(
-        f"DBG PAYOUT CSV: {csv_path} "
-        f"pct_sum={pct_sum} payout_base_usd={payout_base_usd} remain_in_safe_usd={remain_in_safe_usd}"
-    )
+            csv_name = f"payout_{safe_name}_{period_end.strftime('%Y-%m-%d')}.csv"
+            csv_path = write_csv(payout_rows, f"/tmp/{csv_name}")
 
-    send_telegram(
-        f"✅ Payout CSV prepared\n"
-        f"- {csv_name}\n"
-        f"- confirmed(FIX): ${round(float(week_claimed),2):,.2f}\n"
-        f"- payout_base({pct_sum}%): ${payout_base_usd:,.2f}\n"
-        f"- remain_in_safe: ${remain_in_safe_usd:,.2f}",
-        chat_id=chat_id,
-    )
+            print(
+                f"DBG PAYOUT CSV: {csv_path} "
+                f"pct_sum={pct_sum} payout_base_usd={payout_base_usd} remain_in_safe_usd={remain_in_safe_usd}"
+            )
+
+            send_telegram(
+                f"✅ Payout CSV prepared\n"
+                f"- {csv_name}\n"
+                f"- confirmed(FIX): ${round(float(week_claimed),2):,.2f}\n"
+                f"- payout_base({pct_sum}%): ${payout_base_usd:,.2f}\n"
+                f"- remain_in_safe: ${remain_in_safe_usd:,.2f}",
+                chat_id=chat_id,
+            )
                 
                 # (既存) payout sheet
                 ws_payouts = sh.worksheet(os.getenv("GOOGLE_SHEET_PAYOUTS_TAB", "WEEKLY_PAYOUTS"))
