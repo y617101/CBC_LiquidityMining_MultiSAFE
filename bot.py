@@ -1326,8 +1326,14 @@ def main():
                 # send_telegram(..., chat_id=chat_id)
                 
                 # Optional: write to WEEKLY_PAYOUTS sheet
+                print("DBG PAYOUTS_TO_SHEET=", _env("PAYOUTS_TO_SHEET", "0"), flush=True)
+                print("DBG PAYOUT_CSV=", _env("PAYOUT_CSV", "0"), flush=True)
+                print("DBG payouts_tab=", _env("GOOGLE_SHEET_PAYOUTS_TAB", ""), flush=True)
+                print("DBG payout_rows_len=", len(payout_rows), flush=True)
+                
                 if _env("PAYOUTS_TO_SHEET", "0") == "1":
                     ws_payouts = get_weekly_payouts_ws(sh)
+                    print("DBG ws_payouts_title=", ws_payouts.title, flush=True)
                 
                     sheet_rows = [
                         r for r in payout_rows
@@ -1335,8 +1341,9 @@ def main():
                         and len(r) > AMTIDX
                         and float(r[AMTIDX] or 0.0) > 0.0
                     ]
+                    print("DBG sheet_rows_len=", len(sheet_rows), flush=True)
+                
                     append_weekly_payout_rows_once(ws_payouts, sheet_rows, period_end, safe_address)
-
             else:
                 (
                     pos_open,
