@@ -381,6 +381,38 @@ def send_telegram(text: str, chat_id: str):
         dbg(f"Telegram part {i}/{len(chunks)} status:", r.status_code)
         r.raise_for_status()
 
+def send_telegram_file(file_path: str, chat_id: str, caption: str = ""):
+    """
+    TelegramにCSVなどのファイルを添付送信する（sendDocument）
+    - chat_id は '@groupname' でもOK
+    - caption はHTMLで送る（リンク等OK）
+    """
+    token = os.getenv("TG_BOT_TOKEN")
+    if not token:
+        print("Telegram ENV missing: TG_BOT_TOKEN", flush=True)
+        return
+    if not chat_id:
+        print("Telegram chat_id missing", flush=True)
+        return
+
+    url = f"https://api.telegram.org/bot{token}/sendDocument"
+
+    # ファイルが無い/消えてた場合の保険
+    if not os.path.exists(file_path):
+        raise FileNotFoundError(f"file not found: {file_path}")
+
+    with open(file_path, "rb") as f:
+        files = {"document": (os.path.basename(file_path), f)}
+        data = {
+            "chat_id": chat_id,
+            "caption": str(caption or ""),
+            "parse_mode": "HTML",
+            "disable_web_page_preview": True,
+        }
+        r = requests.post(url, data=data, files=files, timeout=60)
+        dbg("Telegram file status:", r.status_code, r.text[:200])
+        r.raise_for_status()
+
 # ================================
 # Sheets (429-safe)
 # ================================
