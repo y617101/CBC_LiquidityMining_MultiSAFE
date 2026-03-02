@@ -1208,7 +1208,10 @@ def main():
                     )
 
                     csv_name = f"payout_{safe_name}_{period_end.strftime('%Y-%m-%d')}.csv"
-                    csv_path = write_csv(payout_rows, f"/tmp/{csv_name}")
+                    # SAFE_REMAINDER は送金CSVから除外
+                    transfer_rows = [r for r in payout_rows if r.get("recipient_id") != "SAFE_REMAINDER"]
+
+                    csv_path = write_csv(transfer_rows, f"/tmp/{csv_name}")
                     print(f"DBG PAYOUT CSV: {csv_path} pct_sum={pct_sum} remain={remain}", flush=True)
                     # ---- CSVをTelegramにファイル添付 ----
                     caption = (
