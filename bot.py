@@ -1209,7 +1209,15 @@ def main():
 
                     csv_name = f"payout_{safe_name}_{period_end.strftime('%Y-%m-%d')}.csv"
                     # SAFE_REMAINDER は送金CSVから除外
-                    transfer_rows = [r for r in payout_rows if r.get("recipient_id") != "SAFE_REMAINDER"]
+                    # SAFE_REMAINDER は送金CSVから除外（payout_rowsはlist行）
+                    # columns: [week_ending, safe_name, safe_address, recipient_id, name, address, pct, amount_usdc, created_at_jst]
+                    RIDX = 3  # recipient_id column index
+                    
+                    transfer_rows = [
+                        r for r in payout_rows
+                        if isinstance(r, list) and len(r) > RIDX and str(r[RIDX]) != "SAFE_REMAINDER"
+                        and float(r[AMTIDX] or 0) > 0
+                    ]
                     
                     csv_path = write_csv(transfer_rows, f"/tmp/{csv_name}")
                     print(f"DBG PAYOUT CSV: {csv_path} pct_sum={pct_sum} remain={remain}", flush=True)
