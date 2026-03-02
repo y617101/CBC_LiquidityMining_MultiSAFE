@@ -510,6 +510,15 @@ def append_weekly_log_row_once(
     safe_norm = str(safe_address).strip().lower()
     
     existing = ws.get_all_values()  # header含む
+    if not existing:
+    # シートが完全に空の場合、ヘッダを書き込む
+    ws.update(
+        "A1:F1",
+        [["week_ending", "safe_name", "safe_address", "weth", "usdc", "usd_fix"]],
+        value_input_option="USER_ENTERED"
+    )
+    existing = ws.get_all_values()
+
     target_row = None
     
     for i, row in enumerate(existing[1:], start=2):  # 2行目から
