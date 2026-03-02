@@ -556,29 +556,33 @@ def get_weekly_payouts_ws(sh):
 
 def append_weekly_payout_rows_once(ws, rows: List[List], week_ending: datetime, safe_address: str):
     """
-    WEEKLY_PAYOUTS sheet format (7 cols):
+    WEEKLY_PAYOUTS sheet format (8 cols):
       A week_ending_jst
-      B safe_address
-      C recipient_id
-      D name
-      E address
-      F amount_usdc
-      G created_at_jst
+      B cbc_no
+      C safe_address
+      D recipient_id
+      E name
+      F address
+      G amount_usdc
+      H created_at_jst
 
     dedup key: (week_ending_jst, safe_address, recipient_id)
-    rows input can be either:
-      - 9 cols: [week_ending, safe_name, safe_address, recipient_id, name, address, pct, amount_usdc, created_at_jst]
-      - 7 cols: [week_ending_jst, safe_address, recipient_id, name, address, amount_usdc, created_at_jst]
+
+    rows input (from build_weekly_payout_rows_with_safe_remainder): 9 cols
+      [week_key, cbc_no, safe_address, recipient_id, name, address, pct, amount_usdc, created_at_jst]
+    also accepts 8 cols already:
+      [week_ending_jst, cbc_no, safe_address, recipient_id, name, address, amount_usdc, created_at_jst]
     """
     existing = sheets_call(ws.get_all_values) or []
 
-    # header ensure
+    # header ensure (8 cols)
     if not existing:
         sheets_call(
             ws.update,
-            "A1:G1",
+            "A1:H1",
             [[
                 "week_ending_jst",
+                "cbc_no",
                 "safe_address",
                 "recipient_id",
                 "name",
@@ -590,19 +594,7 @@ def append_weekly_payout_rows_once(ws, rows: List[List], week_ending: datetime, 
         )
         existing = sheets_call(ws.get_all_values) or []
 
-    # build index from existing (A,B,C)
-    idx = set()
-    for r in existing[1:]:
-        if len(r) < 3:
-            continue
-        wk = str(r[0]).strip()
-        sa = str(r[1]).strip().lower()
-        rid = str(r[2]).strip().lower()
-        if wk and sa and rid:
-            idx.add((wk, sa, rid))
-
     def _wk_str(x) -> str:
-        # unify to "%Y-%m-%d %H:%M"
         if hasattr(x, "strftime"):
             return x.strftime("%Y-%m-%d %H:%M")
         s = str(x).replace("JST", "").strip()
@@ -611,6 +603,17 @@ def append_weekly_payout_rows_once(ws, rows: List[List], week_ending: datetime, 
             s = s[:11] + "0" + s[11:]
         return s
 
+    # build index from existing (A,C,D) = (week, safe_address, recipient_id)
+    idx = set()
+    for r in existing[1:]:
+        if len(r) < 4:
+            continue
+        wk = _wk_str(r[0])
+        sa = str(r[2]).strip().lower()
+        rid = str(r[3]).strip().lower()
+        if wk and sa and rid:
+            idx.add((wk, sa, rid))
+
     new_rows = []
     skipped = 0
 
@@ -618,34 +621,34 @@ def append_weekly_payout_rows_once(ws, rows: List[List], week_ending: datetime, 
         if not isinstance(r, list):
             continue
 
-        # normalize input row -> 7 cols for sheet
+        # normalize input -> 8 cols for sheet
         if len(r) >= 9:
             wk = _wk_str(r[0])
+            cbc_no = str(r[1]).strip()
             sa = str(r[2]).strip().lower()
             rid = str(r[3]).strip()
             name = str(r[4]).strip()
             addr = str(r[5]).strip()
             amt = r[7]
             created = str(r[8]).strip()
-        elif len(r) >= 7:
+        elif len(r) >= 8:
             wk = _wk_str(r[0])
-            sa = str(r[1]).strip().lower()
-            rid = str(r[2]).strip()
-            name = str(r[3]).strip()
-            addr = str(r[4]).strip()
-            amt = r[5]
-            created = str(r[6]).strip()
+            cbc_no = str(r[1]).strip()
+            sa = str(r[2]).strip().lower()
+            rid = str(r[3]).strip()
+            name = str(r[4]).strip()
+            addr = str(r[5]).strip()
+            amt = r[6]
+            created = str(r[7]).strip()
         else:
             continue
 
-        rid_norm = str(rid).strip().lower()
-        key = (wk, sa, rid_norm)
-
+        key = (wk, sa, str(rid).strip().lower())
         if key in idx:
             skipped += 1
             continue
 
-        new_rows.append([wk, sa, rid, name, addr, amt, created])
+        new_rows.append([wk, cbc_no, sa, rid, name, addr, amt, created])
         idx.add(key)
 
     if new_rows:
