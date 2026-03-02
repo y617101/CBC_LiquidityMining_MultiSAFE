@@ -1142,9 +1142,9 @@ def main():
             continue
 
         try:
-            # ================================
+            # =========================
             # WEEKLY (FIX)
-            # ================================
+            # =========================
             if mode == "WEEKLY":
                 (
                     pos_open, net_total, _by_nft_7d,
@@ -1154,7 +1154,7 @@ def main():
                     mtd_weth, mtd_usdc,
                     all_weth, all_usdc,
                 ) = compute_weekly_confirmed_metrics(safe_address, period_end)
-
+        
                 msg = build_weekly_message(
                     safe_address=safe_address,
                     period_end=period_end,
@@ -1171,91 +1171,62 @@ def main():
                     all_usdc=all_usdc,
                     pos_open=pos_open,
                 )
-
-                # ---- payout (WEEKLY only) ----
+        
+                # ---- Sheets: WEEKLY_LOG ----
                 client = get_gsheet_client()
                 sh = open_sheet(client)
-                
-                        # ✅ WEEKLY_LOG に 1行書く（週×SAFEで重複回避）
-        ws_weekly_log = get_weekly_log_ws(sh)
-        append_weekly_log_row_once(
-            ws_weekly_log,
-            week_ending=period_end,
-            safe_name=safe_name,
-            safe_address=safe_address,
-            confirmed_weth=week_weth,
-            confirmed_usdc=week_usdc,
-            confirmed_usd_fix=week_claimed,
-        )
-
-            # ---- payout CSV (WEEKLY only) ----
-            if _env("PAYOUT_CSV", "0") == "1":
-            recipients = load_active_recipients_for_safe(sh, safe_name=safe_name)
-
-            pct_sum = round(sum(float(r.get("pct", 0) or 0) for r in recipients), 6)
-            payout_base_usd = round(float(week_claimed) * (pct_sum / 100.0), 2)
-            remain_in_safe_usd = round(float(week_claimed) - payout_base_usd, 2)
-
-            payout_rows = build_weekly_payout_rows_usd2_owner_remainder(
-                week_ending=period_end.date(),
-                safe_name=safe_name,
-                safe_address=safe_address,
-                week_confirmed_usd=payout_base_usd,
-                recipients=recipients,
-            )
-
-            csv_name = f"payout_{safe_name}_{period_end.strftime('%Y-%m-%d')}.csv"
-            csv_path = write_csv(payout_rows, f"/tmp/{csv_name}")
-
-            print(
-                f"DBG PAYOUT CSV: {csv_path} "
-                f"pct_sum={pct_sum} payout_base_usd={payout_base_usd} remain_in_safe_usd={remain_in_safe_usd}"
-            )
-
-            send_telegram(
-                f"✅ Payout CSV prepared\n"
-                f"- {csv_name}\n"
-                f"- confirmed(FIX): ${round(float(week_claimed),2):,.2f}\n"
-                f"- payout_base({pct_sum}%): ${payout_base_usd:,.2f}\n"
-                f"- remain_in_safe: ${remain_in_safe_usd:,.2f}",
-                chat_id=chat_id,
-            )
-                
-                # (既存) payout sheet
-                ws_payouts = sh.worksheet(os.getenv("GOOGLE_SHEET_PAYOUTS_TAB", "WEEKLY_PAYOUTS"))
-                recipients = load_active_recipients_for_safe(sh, safe_name)
-
-                total_usdc_base = float(week_claimed)  # 原資(USDC扱い)
-                pay_recipients = [
-                    r for r in recipients
-                    if str(r.get("recipient_id", "")).lower() != "system"
-                ]
-                sum_pay_pct = sum(float(r.get("pct", 0.0)) for r in pay_recipients)
-
-                week_key = period_end.strftime("%Y-%m-%d %H:%M")
-                created_at = datetime.now(JST).strftime("%Y-%m-%d %H:%M")
-
-                for r in pay_recipients:
-                    pct = float(r.get("pct", 0.0))
-                    pct_norm = (pct / sum_pay_pct) if sum_pay_pct > 0 else 0.0
-                    amount = round(total_usdc_base * pct_norm, 6)
-
-                    row = [
-                        week_key,
-                        safe_name,
-                        safe_address,
-                        r.get("recipient_id"),
-                        r.get("name"),
-                        r.get("address"),
-                        amount,
-                        created_at,
-                    ]
-                    sheets_call(ws_payouts.append_row, row, value_input_option="USER_ENTERED")
-
-                print(f"DBG before send_telegram mode={mode} name={safe_name} chat_id={chat_id} msg_len={len(msg)}", flush=True)
-                send_telegram(msg, chat_id)
-
-                continue  # ✅ weeklyはdailyへ落とさない
+                ws_weekly_log = get_weekly_log_ws(sh)
+                append_weekly_log_row_once(
+                    ws_weekly_log,
+                    week_ending=period_end,
+                    safe_name=safe_name,
+                    safe_address=safe_address,
+                    confirmed_weth=week_weth,
+                    confirmed_usdc=week_usdc,
+                    confirmed_usd_fix=week_claimed,
+                )
+        
+                # ---- payout CSV ----
+                if _env("PAYOUT_CSV", "0") == "1":
+                    recipients = load_active_recipients_for_safe(sh, safe_name=safe_name)
+        
+                    pct_sum = round(sum(float(r.get("pct", 0) or 0) for r in recipients), 6)
+                    payout_base_usd = round(float(week_claimed) * (pct_sum / 100.0), 2)
+                    remain_in_safe_usd = round(float(week_claimed) - payout_base_usd, 2)
+        
+                    payout_rows = build_weekly_payout_rows_usd2_owner_remainder(
+                        week_ending=period_end.date(),
+                        safe_name=safe_name,
+                        safe_address=safe_address,
+                        week_confirmed_usd=payout_base_usd,
+                        recipients=recipients,
+                    )
+        
+                    csv_name = f"payout_{safe_name}_{period_end.strftime('%Y-%m-%d')}.csv"
+                    csv_path = write_csv(payout_rows, f"/tmp/{csv_name}")
+        
+                    print(f"DBG PAYOUT CSV: {csv_path} remain_in_safe_usd={remain_in_safe_usd} pct_sum={pct_sum}")
+        
+                    send_telegram(
+                        f"✅ Payout CSV prepared\n"
+                        f"- {csv_name}\n"
+                        f"- confirmed(FIX): ${round(float(week_claimed),2):,.2f}\n"
+                        f"- payout_base({pct_sum}%): ${payout_base_usd:,.2f}\n"
+                        f"- remain_in_safe: ${remain_in_safe_usd:,.2f}",
+                        chat_id=chat_id,
+                    )
+        
+            # ここに「通常の週次msg送信」があるなら置く
+            # send_telegram(msg, chat_id=chat_id)
+        
+        except Exception as e:
+            # ここは既存の例外通知ロジックに合わせてOK
+            err = f"ERROR: {safe_name}\nSAFE {safe_address}\n{type(e).__name__}: {e}"
+            print(err, flush=True)
+            try:
+                send_telegram(err, chat_id=chat_id)
+            except Exception:
+                pass
 
             # ================================
             # DAILY (LIVE, REVERT-only)
