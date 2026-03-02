@@ -1187,6 +1187,38 @@ def main():
                     confirmed_usdc=week_usdc,
                     confirmed_usd_fix=week_claimed,  # USD(FIX)
                 )
+                # ---- payout CSV (WEEKLY only) ----
+if _env("PAYOUT_CSV", "0") == "1":
+    # CONFIG_RECIPIENTS から、このSAFEのactive=TRUEだけ読む
+    recipients = load_active_recipients_for_safe(sh, safe_name=safe_name)
+
+    # active合計%（例: 90%）だけ配り、残りはSAFEに残す
+    pct_sum = round(sum(float(r["pct"]) for r in recipients), 6)
+    payout_base_usd = round(float(week_claimed) * (pct_sum / 100.0), 2)   # ★配当原資（USD 2桁）
+    remain_in_safe_usd = round(float(week_claimed) - payout_base_usd, 2)  # ★SAFEに残る分
+
+    payout_rows = build_weekly_payout_rows_usd2_owner_remainder(
+        week_ending=period_end.date(),   # 日付だけでOK（CSV用）
+        safe_name=safe_name,
+        safe_address=safe_address,
+        week_confirmed_usd=payout_base_usd,  # ★ここが重要：配るのはactive分だけ
+        recipients=recipients,
+    )
+
+    csv_name = f"payout_{safe_name}_{period_end.strftime('%Y-%m-%d')}.csv"
+    csv_path = write_csv(payout_rows, f"/tmp/{csv_name}")
+
+    print(f"DBG PAYOUT CSV: {csv_path} pct_sum={pct_sum} payout_base_usd={payout_base_usd} remain_in_safe_usd={remain_in_safe_usd}")
+
+    # Telegramには「作ったよ」と「SAFEに残す分」を出す（ファイル送信はまだしない）
+    send_telegram(
+        f"✅ Payout CSV prepared\n"
+        f"- {csv_name}\n"
+        f"- confirmed(FIX): ${round(float(week_claimed),2):,.2f}\n"
+        f"- payout_base({pct_sum}%): ${payout_base_usd:,.2f}\n"
+        f"- remain_in_safe: ${remain_in_safe_usd:,.2f}",
+        chat_id=chat_id,
+    )
                 
                 # (既存) payout sheet
                 ws_payouts = sh.worksheet(os.getenv("GOOGLE_SHEET_PAYOUTS_TAB", "WEEKLY_PAYOUTS"))
