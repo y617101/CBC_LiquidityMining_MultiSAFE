@@ -507,27 +507,35 @@ def append_weekly_log_row_once(
     """
 
     week_key = week_ending.strftime("%Y-%m-%d %H:%M")
-
-    # 既存行チェック
-    existing = ws.get_all_values()
-    for row in existing[1:]:  # ヘッダー除外
+    safe_norm = str(safe_address).strip().lower()
+    
+    existing = ws.get_all_values()  # header含む
+    target_row = None
+    
+    for i, row in enumerate(existing[1:], start=2):  # 2行目から
         if len(row) < 3:
             continue
-        if row[0] == week_key and row[2] == safe_address:
-            print(f"DBG: WEEKLY_LOG skip existing {safe_name} {week_key}")
-            return
-
-    # 新規追加
-    ws.append_row([
+        wk = str(row[0]).strip()
+        sa = str(row[2]).strip().lower()
+        if wk == week_key and sa == safe_norm:
+            target_row = i
+            break
+    
+    out = [
         week_key,
         safe_name,
         safe_address,
         float(confirmed_weth),
         float(confirmed_usdc),
         float(confirmed_usd_fix),
-    ], value_input_option="USER_ENTERED")
-
-    print(f"DBG: WEEKLY_LOG appended {safe_name} {week_key}")
+    ]
+    
+    if target_row is None:
+        ws.append_row(out, value_input_option="USER_ENTERED")
+        print(f"DBG: WEEKLY_LOG appended {safe_name} {week_key}")
+    else:
+        ws.update(f"A{target_row}:F{target_row}", [out], value_input_option="USER_ENTERED")
+        print(f"DBG: WEEKLY_LOG updated {safe_name} {week_key}")
 
 def get_config_recipients_ws(sh):
     tab_name = os.getenv("GOOGLE_SHEET_CONFIG_TAB", "CONFIG_RECIPIENTS")
