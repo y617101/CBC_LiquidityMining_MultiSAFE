@@ -567,11 +567,7 @@ def append_weekly_payout_rows_once(ws, rows: List[List], week_ending: datetime, 
       H created_at_jst
 
     dedup key: (week_ending_jst, safe_address, recipient_id)
-
-    rows input (from build_weekly_payout_rows_with_safe_remainder): 9 cols
-      [week_key, cbc_no, safe_address, recipient_id, name, address, pct, amount_usdc, created_at_jst]
-    also accepts 8 cols already:
-      [week_ending_jst, cbc_no, safe_address, recipient_id, name, address, amount_usdc, created_at_jst]
+    ただし SAFE_REMAINDER は address を強制的に N/A に “更新” する。
     """
     existing = sheets_call(ws.get_all_values) or []
 
@@ -581,14 +577,8 @@ def append_weekly_payout_rows_once(ws, rows: List[List], week_ending: datetime, 
             ws.update,
             "A1:H1",
             [[
-                "week_ending_jst",
-                "cbc_no",
-                "safe_address",
-                "recipient_id",
-                "name",
-                "address",
-                "amount_usdc",
-                "created_at_jst",
+                "week_ending_jst","cbc_no","safe_address","recipient_id",
+                "name","address","amount_usdc","created_at_jst"
             ]],
             value_input_option="USER_ENTERED",
         )
@@ -598,30 +588,30 @@ def append_weekly_payout_rows_once(ws, rows: List[List], week_ending: datetime, 
         if hasattr(x, "strftime"):
             return x.strftime("%Y-%m-%d %H:%M")
         s = str(x).replace("JST", "").strip()
-        # "2026-03-01 0:00" -> "2026-03-01 00:00"
         if len(s) >= 15 and s[10] == " " and s[12] == ":" and s[11].isdigit():
             s = s[:11] + "0" + s[11:]
         return s
 
-    # build index from existing (A,C,D) = (week, safe_address, recipient_id)
-    idx = set()
-    for r in existing[1:]:
+    # key -> row_number (sheet row index)
+    key_to_row = {}
+    for i, r in enumerate(existing[1:], start=2):
         if len(r) < 4:
             continue
         wk = _wk_str(r[0])
         sa = str(r[2]).strip().lower()
         rid = str(r[3]).strip().lower()
         if wk and sa and rid:
-            idx.add((wk, sa, rid))
+            key_to_row[(wk, sa, rid)] = i
 
     new_rows = []
+    updated = 0
     skipped = 0
 
     for r in rows:
-        if not isinstance(r, list):
+        if not isinstance(r, list) or len(r) < 8:
             continue
 
-        # normalize input -> 8 cols for sheet
+        # normalize from 9 cols
         if len(r) >= 9:
             wk = _wk_str(r[0])
             cbc_no = str(r[1]).strip()
@@ -631,7 +621,7 @@ def append_weekly_payout_rows_once(ws, rows: List[List], week_ending: datetime, 
             addr = str(r[5]).strip()
             amt = r[7]
             created = str(r[8]).strip()
-        elif len(r) >= 8:
+        else:
             wk = _wk_str(r[0])
             cbc_no = str(r[1]).strip()
             sa = str(r[2]).strip().lower()
@@ -640,22 +630,31 @@ def append_weekly_payout_rows_once(ws, rows: List[List], week_ending: datetime, 
             addr = str(r[5]).strip()
             amt = r[6]
             created = str(r[7]).strip()
-        else:
+
+        rid_norm = str(rid).strip().lower()
+        key = (wk, sa, rid_norm)
+
+        # ✅ SAFE_REMAINDER は既存行があれば address を N/A に更新
+        if rid_norm == "safe_remainder" and key in key_to_row:
+            row_no = key_to_row[key]
+            # F列 = address
+            sheets_call(ws.update, f"F{row_no}", [["N/A"]], value_input_option="USER_ENTERED")
+            updated += 1
             continue
 
-        key = (wk, sa, str(rid).strip().lower())
-        if key in idx:
+        # 通常は dedup（既存なら追加しない）
+        if key in key_to_row:
             skipped += 1
             continue
 
         new_rows.append([wk, cbc_no, sa, rid, name, addr, amt, created])
-        idx.add(key)
+        key_to_row[key] = -1  # prevent duplicates in same run
 
     if new_rows:
         sheets_call(ws.append_rows, new_rows, value_input_option="USER_ENTERED")
-        print(f"DBG WEEKLY_PAYOUTS appended rows={len(new_rows)} skipped={skipped}", flush=True)
+        print(f"DBG WEEKLY_PAYOUTS appended rows={len(new_rows)} updated={updated} skipped={skipped}", flush=True)
     else:
-        print(f"DBG WEEKLY_PAYOUTS no new rows (dedup) skipped={skipped}", flush=True)
+        print(f"DBG WEEKLY_PAYOUTS no new rows updated={updated} skipped={skipped}", flush=True)
 
 # ================================
 # Revert API (robust normalize)
