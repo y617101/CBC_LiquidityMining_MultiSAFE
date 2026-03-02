@@ -484,13 +484,20 @@ def open_sheet(client):
     return client.open_by_key(sheet_id)
 
 def get_weekly_log_ws(sh):
-    """
-    WEEKLY_LOG シートを取得
-    環境変数 GOOGLE_SHEET_WEEKLY_LOG_TAB があればそれを使用
-    無ければ 'WEEKLY_LOG'
-    """
-    tab_name = os.getenv("GOOGLE_SHEET_WEEKLY_LOG_TAB", "WEEKLY_LOG")
-    return sh.worksheet(tab_name)
+    ws = sh.worksheet(os.getenv("GOOGLE_SHEET_WEEKLY_TAB", "WEEKLY_LOG"))
+
+    # header含めて取得
+    existing = ws.get_all_values()
+
+    if not existing:
+        # シートが完全に空ならヘッダを書く
+        ws.update(
+            "A1:F1",
+            [["week_ending", "safe_name", "safe_address", "weth", "usdc", "usd_fix"]],
+            value_input_option="USER_ENTERED",
+        )
+
+    return ws
 
 def append_weekly_log_row_once(
     ws,
