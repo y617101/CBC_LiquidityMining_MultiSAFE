@@ -1220,29 +1220,32 @@ def main():
                         f"- recipients(active): {len(recipients)}"
                     )
 
-                    # 集約グループへ（ENV優先）
-                    try:
-                        if csv_hub_chat_id:
-                            send_telegram_file(csv_path, chat_id=csv_hub_chat_id, caption=caption)
-                            print(f"DBG HUB CSV SENT: {safe_name}", flush=True)
-                    except Exception as e:
-                        print(f"DBG HUB CSV FAILED: {e}", flush=True)
-
-                    # 各SAFEグループへ
-                    send_telegram_file(csv_path, chat_id=chat_id, caption=caption)
-
-                    # Optional: write to WEEKLY_PAYOUTS sheet
-                    if _env("PAYOUTS_TO_SHEET", "0") == "1":
-                        ws_payouts = get_weekly_payouts_ws(sh)
-
-                        # ✅ シート記録は「0円除外」(remainderは残すのOK)
-                        sheet_rows = [
-                            r for r in payout_rows
-                            if isinstance(r, list)
-                            and len(r) > AMTIDX
-                            and float(r[AMTIDX] or 0.0) > 0.0
-                        ]
-                        append_weekly_payout_rows_once(ws_payouts, sheet_rows, period_end, safe_address)
+                    # 集約グループへ（ENV優先）: CSVはCSVHUBだけに送る
+                try:
+                    if csv_hub_chat_id:
+                        send_telegram_file(csv_path, chat_id=csv_hub_chat_id, caption=caption)
+                        print(f"DBG HUB CSV SENT: {safe_name}", flush=True)
+                    else:
+                        print("DBG HUB CSV SKIP: CSV_HUB_CHAT_ID is empty", flush=True)
+                except Exception as e:
+                    print(f"DBG HUB CSV FAILED: {e}", flush=True)
+                
+                # ✅ SAFEグループへはCSVも通知も一切送らない（スッキリ版）
+                # send_telegram_file(csv_path, chat_id=chat_id, caption=caption)
+                # send_telegram(..., chat_id=chat_id)
+                
+                # Optional: write to WEEKLY_PAYOUTS sheet
+                if _env("PAYOUTS_TO_SHEET", "0") == "1":
+                    ws_payouts = get_weekly_payouts_ws(sh)
+                
+                    # ✅ シート記録は「0円除外」(remainderは残すのOK)
+                    sheet_rows = [
+                        r for r in payout_rows
+                        if isinstance(r, list)
+                        and len(r) > AMTIDX
+                        and float(r[AMTIDX] or 0.0) > 0.0
+                    ]
+                    append_weekly_payout_rows_once(ws_payouts, sheet_rows, period_end, safe_address)
 
                     # 確認メッセージ（テキスト）
                     send_telegram(
