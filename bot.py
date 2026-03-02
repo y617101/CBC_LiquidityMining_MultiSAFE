@@ -423,10 +423,34 @@ def append_weekly_log_row_once(
     confirmed_usdc,
     confirmed_usd_fix,
 ):
-    week_key = week_ending.strftime("%Y-%m-%d %H:%M")
+    # --- normalize helpers ---
+    def _norm_week(s: str) -> str:
+        s = (s or "").strip()
+        # 例: "2026-03-01 0:00" / "2026-03-01 00:00" / "2026-03-01 00:00 JST"
+        s = s.replace("JST", "").strip()
+        for fmt in ("%Y-%m-%d %H:%M", "%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M"):
+            try:
+                from datetime import datetime
+                dt = datetime.strptime(s, fmt)
+                return dt.strftime("%Y-%m-%d %H:%M")
+            except Exception:
+                pass
+        # "H:MM" 形式を "HH:MM" に寄せる（雑だけど効く）
+        # 例: "2026-03-01 0:00" -> "2026-03-01 00:00"
+        if len(s) >= 15 and s[10] == " " and s[12] == ":" and s[11].isdigit():
+            # " YYYY-MM-DD H:MM "
+            s = s[:11] + "0" + s[11:]
+        return s
+
+    if hasattr(week_ending, "strftime"):
+        week_key = week_ending.strftime("%Y-%m-%d %H:%M")
+    else:
+        week_key = _norm_week(str(week_ending))
+
     safe_norm = str(safe_address).strip().lower()
 
-    existing = sheets_call(ws.get_all_values)  # header含む
+    # 既存取得（ヘッダ含む）
+    existing = sheets_call(ws.get_all_values)
     if not existing:
         sheets_call(
             ws.update,
@@ -437,30 +461,30 @@ def append_weekly_log_row_once(
         existing = sheets_call(ws.get_all_values)
 
     target_row = None
-    for i, row in enumerate(existing[1:], start=2):
+    for i, row in enumerate(existing[1:], start=2):  # 2行目から
         if len(row) < 3:
             continue
-        wk = str(row[0]).strip()
+        wk = _norm_week(str(row[0]))
         sa = str(row[2]).strip().lower()
         if wk == week_key and sa == safe_norm:
             target_row = i
             break
 
-    out = [
+    row_values = [
         week_key,
-        safe_name,
-        safe_address,
-        float(confirmed_weth),
-        float(confirmed_usdc),
-        float(confirmed_usd_fix),
+        str(safe_name),
+        str(safe_address),
+        float(confirmed_weth or 0.0),
+        float(confirmed_usdc or 0.0),
+        float(confirmed_usd_fix or 0.0),
     ]
 
-    if target_row is None:
-        sheets_call(ws.append_row, out, value_input_option="USER_ENTERED")
-        print(f"DBG: WEEKLY_LOG appended {safe_name} {week_key}", flush=True)
-    else:
-        sheets_call(ws.update, f"A{target_row}:F{target_row}", [out], value_input_option="USER_ENTERED")
+    if target_row:
+        sheets_call(ws.update, f"A{target_row}:F{target_row}", [row_values], value_input_option="USER_ENTERED")
         print(f"DBG: WEEKLY_LOG updated {safe_name} {week_key}", flush=True)
+    else:
+        sheets_call(ws.append_row, row_values, value_input_option="USER_ENTERED")
+        print(f"DBG: WEEKLY_LOG appended {safe_name} {week_key}", flush=True)
 
 def get_config_recipients_ws(sh):
     tab_name = _env("GOOGLE_SHEET_CONFIG_TAB", "CONFIG_RECIPIENTS")
