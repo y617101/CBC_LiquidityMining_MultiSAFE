@@ -556,36 +556,103 @@ def get_weekly_payouts_ws(sh):
 
 def append_weekly_payout_rows_once(ws, rows: List[List], week_ending: datetime, safe_address: str):
     """
-    dedup key: week_ending + safe_address + recipient_id
-    ※ rows は header無しのリスト行
+    WEEKLY_PAYOUTS sheet format (7 cols):
+      A week_ending_jst
+      B safe_address
+      C recipient_id
+      D name
+      E address
+      F amount_usdc
+      G created_at_jst
+
+    dedup key: (week_ending_jst, safe_address, recipient_id)
+    rows input can be either:
+      - 9 cols: [week_ending, safe_name, safe_address, recipient_id, name, address, pct, amount_usdc, created_at_jst]
+      - 7 cols: [week_ending_jst, safe_address, recipient_id, name, address, amount_usdc, created_at_jst]
     """
     existing = sheets_call(ws.get_all_values) or []
+
+    # header ensure
+    if not existing:
+        sheets_call(
+            ws.update,
+            "A1:G1",
+            [[
+                "week_ending_jst",
+                "safe_address",
+                "recipient_id",
+                "name",
+                "address",
+                "amount_usdc",
+                "created_at_jst",
+            ]],
+            value_input_option="USER_ENTERED",
+        )
+        existing = sheets_call(ws.get_all_values) or []
+
+    # build index from existing (A,B,C)
     idx = set()
     for r in existing[1:]:
-        if len(r) < 4:
+        if len(r) < 3:
             continue
         wk = str(r[0]).strip()
-        sa = str(r[2]).strip().lower()
-        rid = str(r[3]).strip().lower()
-        idx.add((wk, sa, rid))
+        sa = str(r[1]).strip().lower()
+        rid = str(r[2]).strip().lower()
+        if wk and sa and rid:
+            idx.add((wk, sa, rid))
+
+    def _wk_str(x) -> str:
+        # unify to "%Y-%m-%d %H:%M"
+        if hasattr(x, "strftime"):
+            return x.strftime("%Y-%m-%d %H:%M")
+        s = str(x).replace("JST", "").strip()
+        # "2026-03-01 0:00" -> "2026-03-01 00:00"
+        if len(s) >= 15 and s[10] == " " and s[12] == ":" and s[11].isdigit():
+            s = s[:11] + "0" + s[11:]
+        return s
 
     new_rows = []
+    skipped = 0
+
     for r in rows:
-        if not isinstance(r, list) or len(r) < 4:
+        if not isinstance(r, list):
             continue
-        wk = str(r[0]).strip()
-        sa = str(r[2]).strip().lower()
-        rid = str(r[3]).strip().lower()
-        key = (wk, sa, rid)
+
+        # normalize input row -> 7 cols for sheet
+        if len(r) >= 9:
+            wk = _wk_str(r[0])
+            sa = str(r[2]).strip().lower()
+            rid = str(r[3]).strip()
+            name = str(r[4]).strip()
+            addr = str(r[5]).strip()
+            amt = r[7]
+            created = str(r[8]).strip()
+        elif len(r) >= 7:
+            wk = _wk_str(r[0])
+            sa = str(r[1]).strip().lower()
+            rid = str(r[2]).strip()
+            name = str(r[3]).strip()
+            addr = str(r[4]).strip()
+            amt = r[5]
+            created = str(r[6]).strip()
+        else:
+            continue
+
+        rid_norm = str(rid).strip().lower()
+        key = (wk, sa, rid_norm)
+
         if key in idx:
+            skipped += 1
             continue
-        new_rows.append(r)
+
+        new_rows.append([wk, sa, rid, name, addr, amt, created])
+        idx.add(key)
 
     if new_rows:
         sheets_call(ws.append_rows, new_rows, value_input_option="USER_ENTERED")
-        print(f"DBG WEEKLY_PAYOUTS appended rows={len(new_rows)}", flush=True)
+        print(f"DBG WEEKLY_PAYOUTS appended rows={len(new_rows)} skipped={skipped}", flush=True)
     else:
-        print("DBG WEEKLY_PAYOUTS no new rows (dedup)", flush=True)
+        print(f"DBG WEEKLY_PAYOUTS no new rows (dedup) skipped={skipped}", flush=True)
 
 # ================================
 # Revert API (robust normalize)
