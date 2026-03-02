@@ -564,22 +564,37 @@ def load_active_recipients_for_safe(sh, safe_name: str):
 # ================================
 def fetch_positions(safe: str, active: bool = True):
     url = f"{REVERT_API}/v1/positions/uniswapv3/account/{safe}"
-    params = {"active": "true" if active else "false", "with-v4": "true"}
-    r = requests.get(url, params=params, timeout=30)
-    dbg("DBG fetch_positions", "active=", active, "status=", r.status_code, "url=", r.url)
+    params = {"active": "true" if active else "false"}
 
-    if r.status_code != 200:
-        dbg("DBG body:", r.text[:800])
-    r.raise_for_status()
+    retries = 5        # 最大5回試す
+    delay = 1          # 最初は1秒待つ
 
-    js = r.json()
-    if isinstance(js, dict):
-        dbg("DBG resp keys:", list(js.keys())[:30])
-        for k in ("positions", "data", "result"):
-            v = js.get(k)
-            dbg(f"DBG key {k} type:", type(v).__name__, "len=", (len(v) if isinstance(v, list) else "n/a"))
+    for attempt in range(retries):
+        try:
+            r = requests.get(url, params=params, timeout=30)
+
+            # サーバー側エラー（500系）は再試行
+            if r.status_code >= 500:
+                raise Exception(f"Server {r.status_code}")
+
+            # それ以外のエラーもここで検知
+            r.raise_for_status()
+
+            # 成功したらループを抜ける
+            break
+
+        except Exception as e:
+            dbg("DBG retry", attempt + 1, "error=", e)
+            time.sleep(delay)
+            delay *= 2   # 1→2→4→8→16秒と増やす
+
     else:
-        dbg("DBG resp type:", type(js).__name__, "len=", (len(js) if isinstance(js, list) else "n/a"))
+        # 5回失敗したら空で返す（絶対に止めない）
+        dbg("DBG FINAL FAIL - returning empty")
+        return []
+
+    # 正常レスポンス処理
+    js = r.json()
     return js
 
 def _normalize_positions(resp) -> List[dict]:
