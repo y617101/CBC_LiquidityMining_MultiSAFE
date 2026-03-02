@@ -81,10 +81,6 @@ def build_uniswap_link_base(nft_id: str) -> str:
     return f"https://app.uniswap.org/positions/v3/base/{nft_id}"
 
 def _to_ts_sec(ts):
-    """
-    Accept epoch seconds/ms, numeric string, or ISO string.
-    Returns int seconds (UTC-based epoch).
-    """
     try:
         if ts is None:
             return None
@@ -156,9 +152,6 @@ def _norm_cf_type(t) -> str:
 norm_cf_type = _norm_cf_type
 
 def _is_claimed_type(cf_type) -> bool:
-    """
-    confirmed fee types (Revert cash_flows) - settlement basis
-    """
     t = _norm_cf_type(cf_type)
     return t in (
         "fees-collected",
@@ -171,30 +164,7 @@ def _is_claimed_type(cf_type) -> bool:
 def is_claimed_type(cf_type) -> bool:
     return _is_claimed_type(cf_type)
 
-def _get_cf_token_addr(cf: dict, which: str) -> str:
-    v = cf.get(which)
-    if isinstance(v, dict):
-        return str(v.get("address") or v.get("id") or "").strip().lower()
-    if isinstance(v, str):
-        return v.strip().lower()
-    return ""
-
-def _get_cf_amount(cf: dict, which: str) -> float:
-    if which == "amount0":
-        return float(to_f(cf.get("collected_fees_token0") or cf.get("amount0") or 0.0, 0.0) or 0.0)
-    else:
-        return float(to_f(cf.get("collected_fees_token1") or cf.get("amount1") or 0.0, 0.0) or 0.0)
-
-def _iter_all_cash_flows(pos_all: List[dict]):
-    for pos in (pos_all or []):
-        for cf in (pos.get("cash_flows") or []):
-            if isinstance(cf, dict):
-                yield cf
-
 def _get_cf_usd(cf: dict) -> float:
-    """
-    prices × amount でUSDを復元する（claimed-fees対策）
-    """
     def _f(x, default=0.0):
         try:
             return float(x)
@@ -227,10 +197,6 @@ def _get_cf_usd(cf: dict) -> float:
     return 0.0
 
 def pick_confirmed_cf(cash_flows: List[dict], period_start: datetime, period_end: datetime) -> List[dict]:
-    """
-    cash_flows から confirmed-only を拾って、窓 [period_start, period_end) に入るものを
-    USD / amount_weth / amount_usdc 推定付きで rows 化して返す（重複排除あり）
-    """
     def _to_f(x) -> float:
         try:
             return float(x)
@@ -382,12 +348,7 @@ def send_telegram(text: str, chat_id: str):
         r.raise_for_status()
 
 def send_telegram_file(file_path: str, chat_id: str, caption: str = ""):
-    """
-    TelegramにCSVなどのファイルを添付送信する（sendDocument）
-    - chat_id は '@groupname' でもOK
-    - caption はHTMLで送る（リンク等OK）
-    """
-    token = os.getenv("TG_BOT_TOKEN")
+    token = _env("TG_BOT_TOKEN", "")
     if not token:
         print("Telegram ENV missing: TG_BOT_TOKEN", flush=True)
         return
@@ -396,8 +357,6 @@ def send_telegram_file(file_path: str, chat_id: str, caption: str = ""):
         return
 
     url = f"https://api.telegram.org/bot{token}/sendDocument"
-
-    # ファイルが無い/消えてた場合の保険
     if not os.path.exists(file_path):
         raise FileNotFoundError(f"file not found: {file_path}")
 
@@ -446,7 +405,6 @@ def open_sheet(client):
 def get_weekly_log_ws(sh):
     ws = sh.worksheet(_env("GOOGLE_SHEET_WEEKLY_TAB", "WEEKLY_LOG"))
     existing = sheets_call(ws.get_all_values)
-
     if not existing:
         sheets_call(
             ws.update,
@@ -465,9 +423,6 @@ def append_weekly_log_row_once(
     confirmed_usdc,
     confirmed_usd_fix,
 ):
-    """
-    WEEKLY_LOG に 週×SAFE で1行だけ追加（同じ週＋SAFEは update）
-    """
     week_key = week_ending.strftime("%Y-%m-%d %H:%M")
     safe_norm = str(safe_address).strip().lower()
 
@@ -482,7 +437,7 @@ def append_weekly_log_row_once(
         existing = sheets_call(ws.get_all_values)
 
     target_row = None
-    for i, row in enumerate(existing[1:], start=2):  # 2行目から
+    for i, row in enumerate(existing[1:], start=2):
         if len(row) < 3:
             continue
         wk = str(row[0]).strip()
@@ -527,26 +482,34 @@ def load_active_recipients_for_safe(sh, safe_name: str):
         if not _is_true(r.get("active")):
             continue
 
+        addr = str(r.get("address") or "").strip()
+        if not addr:
+            # 空白アドレスは事故防止で除外
+            continue
+
         pct_raw = str(r.get("pct", "")).replace("%", "").strip()
         try:
             pct = float(pct_raw)  # percent
         except Exception:
             pct = 0.0
 
+        if pct <= 0:
+            # 0%は除外（事故防止）
+            continue
+
         result.append({
-            "recipient_id": r.get("recipient_id"),
-            "name": r.get("name"),
-            "address": r.get("address"),
+            "recipient_id": str(r.get("recipient_id") or "").strip(),
+            "name": str(r.get("name") or "").strip(),
+            "address": addr,
             "pct": pct,  # percent
         })
 
     return result
 
-# ---- Optional: WEEKLY_PAYOUTS sheet ----
+# ---- WEEKLY_PAYOUTS sheet ----
 def get_weekly_payouts_ws(sh):
     tab = _env("GOOGLE_SHEET_PAYOUTS_TAB", "WEEKLY_PAYOUTS")
     ws = sh.worksheet(tab)
-
     existing = sheets_call(ws.get_all_values)
     if not existing:
         sheets_call(
@@ -570,17 +533,26 @@ def get_weekly_payouts_ws(sh):
 def append_weekly_payout_rows_once(ws, rows: List[List], week_ending: datetime, safe_address: str):
     """
     dedup key: week_ending + safe_address + recipient_id
+    ※ rows は header無しのリスト行
     """
     existing = sheets_call(ws.get_all_values) or []
     idx = set()
     for r in existing[1:]:
         if len(r) < 4:
             continue
-        idx.add((str(r[0]).strip(), str(r[2]).strip().lower(), str(r[3]).strip().lower()))
+        wk = str(r[0]).strip()
+        sa = str(r[2]).strip().lower()
+        rid = str(r[3]).strip().lower()
+        idx.add((wk, sa, rid))
 
     new_rows = []
     for r in rows:
-        key = (str(r[0]).strip(), str(r[2]).strip().lower(), str(r[3]).strip().lower())
+        if not isinstance(r, list) or len(r) < 4:
+            continue
+        wk = str(r[0]).strip()
+        sa = str(r[2]).strip().lower()
+        rid = str(r[3]).strip().lower()
+        key = (wk, sa, rid)
         if key in idx:
             continue
         new_rows.append(r)
@@ -735,7 +707,6 @@ def get_weekly_period_end_jst(now: Optional[datetime] = None) -> datetime:
     else:
         now = now.astimezone(JST) if now.tzinfo else now.replace(tzinfo=JST)
 
-    # weekday: Mon=0 ... Sun=6
     days_since_sun = (now.weekday() - 6) % 7
     sun_0 = (now - timedelta(days=days_since_sun)).replace(hour=0, minute=0, second=0, microsecond=0)
     if now < sun_0:
@@ -1088,7 +1059,7 @@ def build_weekly_payout_rows_with_safe_remainder(
             created_at,
         ])
 
-    # SAFE内残し（system分など）
+    # SAFE内残し（system分など）※送金CSVからは除外するが、記録は残せる
     if remain > 0:
         rows.append([
             week_key,
@@ -1138,6 +1109,8 @@ def main():
 
     period_end = get_weekly_period_end_jst() if mode == "WEEKLY" else get_period_end_jst()
     print("DBG period_end JST:", period_end.strftime("%Y-%m-%d %H:%M"), flush=True)
+
+    csv_hub_chat_id = _env("CSV_HUB_CHAT_ID", "@csvhub")  # ← ここで集約先をENV化
 
     for s in safes:
         safe_name = (s.get("name") or "NONAME").strip()
@@ -1208,20 +1181,35 @@ def main():
                     )
 
                     csv_name = f"payout_{safe_name}_{period_end.strftime('%Y-%m-%d')}.csv"
-                    # SAFE_REMAINDER は送金CSVから除外
-                    # SAFE_REMAINDER は送金CSVから除外（payout_rowsはlist行）
+
                     # columns: [week_ending, safe_name, safe_address, recipient_id, name, address, pct, amount_usdc, created_at_jst]
-                    RIDX = 3  # recipient_id column index
-                    
+                    RIDX = 3  # recipient_id
+                    AMTIDX = 7  # amount_usdc ✅（未定義で落ちないように固定）
+
+                    # ✅ 送金CSVは「SAFE_REMAINDER除外」+「0円除外」+「行の形チェック」
                     transfer_rows = [
                         r for r in payout_rows
-                        if isinstance(r, list) and len(r) > RIDX and str(r[RIDX]) != "SAFE_REMAINDER"
-                        and float(r[AMTIDX] or 0) > 0
+                        if isinstance(r, list)
+                        and len(r) > AMTIDX
+                        and str(r[RIDX]).strip() != "SAFE_REMAINDER"
+                        and float(r[AMTIDX] or 0.0) > 0.0
                     ]
-                    
+
+                    # 送金する行が無いなら、ファイル送信もしない（事故防止）
+                    if not transfer_rows:
+                        send_telegram(
+                            "⚠️ Payout CSV skipped (no transferable rows)\n"
+                            f"- week_end: {h(period_end.strftime('%Y-%m-%d %H:%M'))} JST\n"
+                            f"- confirmed(FIX): {h(fmt_money(week_claimed))}\n"
+                            f"- payout_pct_sum: {h(pct_sum)}%\n"
+                            f"- remain_in_safe: {h(fmt_money(remain))}",
+                            chat_id=chat_id,
+                        )
+                        continue
+
                     csv_path = write_csv(transfer_rows, f"/tmp/{csv_name}")
                     print(f"DBG PAYOUT CSV: {csv_path} pct_sum={pct_sum} remain={remain}", flush=True)
-                    # ---- CSVをTelegramにファイル添付 ----
+
                     caption = (
                         f"📦 {safe_name} payout\n"
                         "✅ Payout prepared\n"
@@ -1229,32 +1217,42 @@ def main():
                         f"- confirmed(FIX): {fmt_money(week_claimed)}\n"
                         f"- payout_pct_sum: {pct_sum:.1f}%\n"
                         f"- remain_in_safe: {fmt_money(remain)}\n"
-                        f"- recipients: {len(recipients)}"
+                        f"- recipients(active): {len(recipients)}"
                     )
-                    
-                    # 集約グループへ
+
+                    # 集約グループへ（ENV優先）
                     try:
-                        send_telegram_file(csv_path, chat_id="@csvhub", caption=caption)
-                        print(f"DBG HUB CSV SENT: {safe_name}", flush=True)
+                        if csv_hub_chat_id:
+                            send_telegram_file(csv_path, chat_id=csv_hub_chat_id, caption=caption)
+                            print(f"DBG HUB CSV SENT: {safe_name}", flush=True)
                     except Exception as e:
                         print(f"DBG HUB CSV FAILED: {e}", flush=True)
-                    
+
                     # 各SAFEグループへ
                     send_telegram_file(csv_path, chat_id=chat_id, caption=caption)
 
                     # Optional: write to WEEKLY_PAYOUTS sheet
                     if _env("PAYOUTS_TO_SHEET", "0") == "1":
                         ws_payouts = get_weekly_payouts_ws(sh)
-                        append_weekly_payout_rows_once(ws_payouts, payout_rows, period_end, safe_address)
 
+                        # ✅ シート記録は「0円除外」(remainderは残すのOK)
+                        sheet_rows = [
+                            r for r in payout_rows
+                            if isinstance(r, list)
+                            and len(r) > AMTIDX
+                            and float(r[AMTIDX] or 0.0) > 0.0
+                        ]
+                        append_weekly_payout_rows_once(ws_payouts, sheet_rows, period_end, safe_address)
+
+                    # 確認メッセージ（テキスト）
                     send_telegram(
                         "✅ Payout prepared\n"
                         f"- week_end: {h(period_end.strftime('%Y-%m-%d %H:%M'))} JST\n"
-                        f"- csv: {h(csv_name)} (saved on server)\n"
+                        f"- csv: {h(csv_name)} (attached)\n"
                         f"- confirmed(FIX): {h(fmt_money(week_claimed))}\n"
                         f"- payout_pct_sum: {h(pct_sum)}%\n"
                         f"- remain_in_safe: {h(fmt_money(remain))}\n"
-                        f"- recipients: {h(len(recipients))}",
+                        f"- recipients(active): {h(len(recipients))}",
                         chat_id=chat_id,
                     )
 
