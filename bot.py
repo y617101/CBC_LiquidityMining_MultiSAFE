@@ -2,7 +2,9 @@ import os
 import json
 import html
 import time
+import csv
 import requests
+
 print("DBG BOOT MARKER: 2026-02-24-AAAA", flush=True)
 
 from datetime import datetime, timedelta, timezone
@@ -12,7 +14,7 @@ import gspread
 from google.oauth2.service_account import Credentials
 
 # ================================
-# Constants (JST MUST be defined early)
+# Constants
 # ================================
 JST = timezone(timedelta(hours=9))
 REVERT_API = "https://api.revert.finance"
@@ -23,6 +25,9 @@ USDC_ADDR = "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913".lower()
 # ================================
 # Small helpers
 # ================================
+def _env(name: str, default: str = "") -> str:
+    return (os.getenv(name) or default).strip()
+
 def h(x) -> str:
     return html.escape(str(x), quote=True)
 
@@ -48,8 +53,14 @@ def _lower(s):
     return str(s or "").strip().lower()
 
 def dbg(*args):
-    if (os.getenv("DEBUG") or "").strip() == "1":
+    if _env("DEBUG", "0") == "1":
         print(*args, flush=True)
+
+def _is_true(v) -> bool:
+    if isinstance(v, bool):
+        return v
+    s = str(v or "").strip().lower()
+    return s in ("true", "1", "yes", "y")
 
 def build_basescan_addr_link(addr: str) -> str:
     a = (addr or "").strip()
@@ -103,6 +114,27 @@ def _to_ts_sec(ts):
     except Exception:
         return None
 
+def ts_to_dt(ts):
+    if ts is None:
+        return None
+
+    if isinstance(ts, (int, float)):
+        x = float(ts)
+        if x > 1e12:
+            x /= 1000.0
+        return datetime.fromtimestamp(x, tz=JST)
+
+    if isinstance(ts, str):
+        s = ts.strip()
+        try:
+            if s.endswith("Z"):
+                s = s[:-1] + "+00:00"
+            return datetime.fromisoformat(s).astimezone(JST)
+        except Exception:
+            return None
+
+    return None
+
 def _get_tx_hash(cf: dict) -> str:
     return str(
         cf.get("tx_hash")
@@ -120,7 +152,7 @@ def _norm_cf_type(t) -> str:
     s = s.replace("_", "-").replace(" ", "-")
     return s
 
-# ✅ FIX: global alias (prevents "name 'norm_cf_type' is not defined")
+# alias (legacy)
 norm_cf_type = _norm_cf_type
 
 def _is_claimed_type(cf_type) -> bool:
@@ -159,29 +191,6 @@ def _iter_all_cash_flows(pos_all: List[dict]):
             if isinstance(cf, dict):
                 yield cf
 
-def ts_to_dt(ts):
-    if ts is None:
-        return None
-
-    # numeric (sec or ms)
-    if isinstance(ts, (int, float)):
-        x = float(ts)
-        if x > 1e12:
-            x /= 1000.0
-        return datetime.fromtimestamp(x, tz=JST)
-
-    # string ISO
-    if isinstance(ts, str):
-        s = ts.strip()
-        try:
-            if s.endswith("Z"):
-                s = s[:-1] + "+00:00"
-            return datetime.fromisoformat(s).astimezone(JST)
-        except Exception:
-            return None
-
-    return None
-
 def _get_cf_usd(cf: dict) -> float:
     """
     prices × amount でUSDを復元する（claimed-fees対策）
@@ -209,7 +218,6 @@ def _get_cf_usd(cf: dict) -> float:
     if (p0 > 0 or p1 > 0) and (a0 != 0.0 or a1 != 0.0):
         return max(0.0, a0 * p0 + a1 * p1)
 
-    # fallback: try direct fields if ever present
     for k in ("usd", "usd_value", "value_usd", "amount_usd", "valueUsd", "amountUsd"):
         v = cf.get(k)
         vv = _f(v, 0.0)
@@ -218,74 +226,19 @@ def _get_cf_usd(cf: dict) -> float:
 
     return 0.0
 
-def sum_confirmed_tokens_in_window(pos_all: List[dict], start_dt, end_dt):
-    """
-    confirmed (claimed-fees / fees-collected) を USD/WETH/USDC で合算
-    窓は [start_dt, end_dt) / Noneは無制限
-    """
-    start_ts = int(start_dt.timestamp()) if start_dt else None
-    end_ts = int(end_dt.timestamp()) if end_dt else None
-
-    usd_total = 0.0
-    weth_total = 0.0
-    usdc_total = 0.0
-
-    for cf in _iter_all_cash_flows(pos_all):
-        if not _is_claimed_type(cf.get("type")):
-            continue
-
-        ts = _to_ts_sec(cf.get("ts") or cf.get("timestamp") or cf.get("time") or cf.get("created_at"))
-        if ts is None:
-            continue
-        if start_ts is not None and ts < start_ts:
-            continue
-        if end_ts is not None and ts >= end_ts:
-            continue
-
-        usd_total += float(_get_cf_usd(cf) or 0.0)
-
-        t0 = _get_cf_token_addr(cf, "token0")
-        t1 = _get_cf_token_addr(cf, "token1")
-        a0 = _get_cf_amount(cf, "amount0")
-        a1 = _get_cf_amount(cf, "amount1")
-
-        if t0 == WETH_ADDR:
-            weth_total += a0
-        elif t0 == USDC_ADDR:
-            usdc_total += a0
-
-        if t1 == WETH_ADDR:
-            weth_total += a1
-        elif t1 == USDC_ADDR:
-            usdc_total += a1
-
-    return float(usd_total), float(weth_total), float(usdc_total)
-
 def pick_confirmed_cf(cash_flows: List[dict], period_start: datetime, period_end: datetime) -> List[dict]:
     """
     cash_flows から confirmed-only を拾って、窓 [period_start, period_end) に入るものを
     USD / amount_weth / amount_usdc 推定付きで rows 化して返す（重複排除あり）
     """
-    types = {}
-    print("DBG cf sample keys:", list(cash_flows[0].keys()) if cash_flows else [], flush=True)
-
-    for r in cash_flows:
-        t = str(r.get("type") or r.get("cash_flow_type") or r.get("event_type") or "").strip()
-        types[t] = types.get(t, 0) + 1
-
-    print("DBG cf types top:", sorted(types.items(), key=lambda x: -x[1])[:10], flush=True)
-
     def _to_f(x) -> float:
         try:
             return float(x)
         except Exception:
             return 0.0
 
-    dbg("DBG pick_confirmed_cf window JST:", period_start, period_end)
-
     rows: List[dict] = []
     passed = 0
-    shown = 0
 
     for cf in (cash_flows or []):
         if not isinstance(cf, dict):
@@ -295,7 +248,6 @@ def pick_confirmed_cf(cash_flows: List[dict], period_start: datetime, period_end
         if not _is_claimed_type(t_norm):
             continue
 
-        # timestamp key candidates
         dt = (
             ts_to_dt(cf.get("timestamp"))
             or ts_to_dt(cf.get("ts"))
@@ -303,16 +255,6 @@ def pick_confirmed_cf(cash_flows: List[dict], period_start: datetime, period_end
             or ts_to_dt(cf.get("created_at"))
             or ts_to_dt(cf.get("date"))
         )
-
-        if t_norm == "claimed-fees" and shown < 5:
-            print(
-                "DBG claimed-fees dt check:",
-                "raw_ts=", cf.get("timestamp"),
-                "dt=", dt,
-                "type=", cf.get("type"),
-                flush=True
-            )
-            shown += 1
 
         if not dt:
             continue
@@ -357,18 +299,6 @@ def pick_confirmed_cf(cash_flows: List[dict], period_start: datetime, period_end
                 weth_amt = a1
                 usdc_amt = a0
 
-        if passed <= 5:
-            dbg(
-                "DBG PASS sample",
-                "dt=", dt,
-                "type=", cf.get("type"),
-                "tx=", (txh[:10] if txh else ""),
-                "nft=", nft,
-                "usd=", usd,
-                "weth=", weth_amt,
-                "usdc=", usdc_amt,
-            )
-
         rows.append({
             "usd": float(usd or 0.0),
             "amount_weth": float(weth_amt or 0.0),
@@ -393,7 +323,6 @@ def pick_confirmed_cf(cash_flows: List[dict], period_start: datetime, period_end
     for _, arr in grouped.items():
         if not arr:
             continue
-
         claimed = [item for item in arr if _norm_cf_type(item.get("type")) == "claimed-fees"]
         target = claimed if claimed else arr
         best = max(target, key=lambda item: float(item.get("usd") or 0.0))
@@ -401,14 +330,13 @@ def pick_confirmed_cf(cash_flows: List[dict], period_start: datetime, period_end
 
     dbg("DBG pick_confirmed_cf passed/rows:", passed, len(rows))
     dbg("DBG pick_confirmed_cf grouped/picked:", len(grouped), len(picked))
-
     return picked
 
 # ================================
 # Telegram
 # ================================
 def send_telegram(text: str, chat_id: str):
-    token = os.getenv("TG_BOT_TOKEN")
+    token = _env("TG_BOT_TOKEN", "")
     if not token:
         print("Telegram ENV missing: TG_BOT_TOKEN", flush=True)
         return
@@ -478,25 +406,22 @@ def get_gsheet_client():
     return gspread.authorize(creds)
 
 def open_sheet(client):
-    sheet_id = os.getenv("GOOGLE_SHEET_ID")
+    sheet_id = _env("GOOGLE_SHEET_ID", "")
     if not sheet_id:
         raise RuntimeError("ENV missing: GOOGLE_SHEET_ID")
     return client.open_by_key(sheet_id)
 
 def get_weekly_log_ws(sh):
-    ws = sh.worksheet(os.getenv("GOOGLE_SHEET_WEEKLY_TAB", "WEEKLY_LOG"))
-
-    # header含めて取得
-    existing = ws.get_all_values()
+    ws = sh.worksheet(_env("GOOGLE_SHEET_WEEKLY_TAB", "WEEKLY_LOG"))
+    existing = sheets_call(ws.get_all_values)
 
     if not existing:
-        # シートが完全に空ならヘッダを書く
-        ws.update(
+        sheets_call(
+            ws.update,
             "A1:F1",
             [["week_ending", "safe_name", "safe_address", "weth", "usdc", "usd_fix"]],
             value_input_option="USER_ENTERED",
         )
-
     return ws
 
 def append_weekly_log_row_once(
@@ -509,25 +434,22 @@ def append_weekly_log_row_once(
     confirmed_usd_fix,
 ):
     """
-    WEEKLY_LOG に 週×SAFE で1行だけ追加
-    既に同じ週＋SAFEがあればスキップ
+    WEEKLY_LOG に 週×SAFE で1行だけ追加（同じ週＋SAFEは update）
     """
-
     week_key = week_ending.strftime("%Y-%m-%d %H:%M")
     safe_norm = str(safe_address).strip().lower()
-    
-    existing = ws.get_all_values()  # header含む
 
-if not existing:
-    # シートが完全に空の場合、ヘッダを書き込む
-    ws.update(
-        "A1:F1",
-        [["week_ending", "safe_name", "safe_address", "weth", "usdc", "usd_fix"]],
-        value_input_option="USER_ENTERED",
-    )
-    existing = ws.get_all_values()
+    existing = sheets_call(ws.get_all_values)  # header含む
+    if not existing:
+        sheets_call(
+            ws.update,
+            "A1:F1",
+            [["week_ending", "safe_name", "safe_address", "weth", "usdc", "usd_fix"]],
+            value_input_option="USER_ENTERED",
+        )
+        existing = sheets_call(ws.get_all_values)
+
     target_row = None
-    
     for i, row in enumerate(existing[1:], start=2):  # 2行目から
         if len(row) < 3:
             continue
@@ -536,7 +458,7 @@ if not existing:
         if wk == week_key and sa == safe_norm:
             target_row = i
             break
-    
+
     out = [
         week_key,
         safe_name,
@@ -545,19 +467,24 @@ if not existing:
         float(confirmed_usdc),
         float(confirmed_usd_fix),
     ]
-    
+
     if target_row is None:
-        ws.append_row(out, value_input_option="USER_ENTERED")
-        print(f"DBG: WEEKLY_LOG appended {safe_name} {week_key}")
+        sheets_call(ws.append_row, out, value_input_option="USER_ENTERED")
+        print(f"DBG: WEEKLY_LOG appended {safe_name} {week_key}", flush=True)
     else:
-        ws.update(f"A{target_row}:F{target_row}", [out], value_input_option="USER_ENTERED")
-        print(f"DBG: WEEKLY_LOG updated {safe_name} {week_key}")
+        sheets_call(ws.update, f"A{target_row}:F{target_row}", [out], value_input_option="USER_ENTERED")
+        print(f"DBG: WEEKLY_LOG updated {safe_name} {week_key}", flush=True)
 
 def get_config_recipients_ws(sh):
-    tab_name = os.getenv("GOOGLE_SHEET_CONFIG_TAB", "CONFIG_RECIPIENTS")
+    tab_name = _env("GOOGLE_SHEET_CONFIG_TAB", "CONFIG_RECIPIENTS")
     return sh.worksheet(tab_name)
 
 def load_active_recipients_for_safe(sh, safe_name: str):
+    """
+    CONFIG_RECIPIENTS:
+      safe_name, recipient_id, name, address, pct, active(TRUE/FALSE)
+    pct は「10」「4」「70」みたいな %値として扱う（合計90など）
+    """
     ws = get_config_recipients_ws(sh)
     rows = sheets_call(ws.get_all_records) or []
 
@@ -565,12 +492,12 @@ def load_active_recipients_for_safe(sh, safe_name: str):
     for r in rows:
         if str(r.get("safe_name", "")).strip() != safe_name:
             continue
-        if not r.get("active"):
+        if not _is_true(r.get("active")):
             continue
 
         pct_raw = str(r.get("pct", "")).replace("%", "").strip()
         try:
-            pct = float(pct_raw) / 100.0
+            pct = float(pct_raw)  # percent
         except Exception:
             pct = 0.0
 
@@ -578,10 +505,59 @@ def load_active_recipients_for_safe(sh, safe_name: str):
             "recipient_id": r.get("recipient_id"),
             "name": r.get("name"),
             "address": r.get("address"),
-            "pct": pct,
+            "pct": pct,  # percent
         })
 
     return result
+
+# ---- Optional: WEEKLY_PAYOUTS sheet ----
+def get_weekly_payouts_ws(sh):
+    tab = _env("GOOGLE_SHEET_PAYOUTS_TAB", "WEEKLY_PAYOUTS")
+    ws = sh.worksheet(tab)
+
+    existing = sheets_call(ws.get_all_values)
+    if not existing:
+        sheets_call(
+            ws.update,
+            "A1:I1",
+            [[
+                "week_ending",
+                "safe_name",
+                "safe_address",
+                "recipient_id",
+                "name",
+                "address",
+                "pct",
+                "amount_usdc",
+                "created_at_jst",
+            ]],
+            value_input_option="USER_ENTERED",
+        )
+    return ws
+
+def append_weekly_payout_rows_once(ws, rows: List[List], week_ending: datetime, safe_address: str):
+    """
+    dedup key: week_ending + safe_address + recipient_id
+    """
+    existing = sheets_call(ws.get_all_values) or []
+    idx = set()
+    for r in existing[1:]:
+        if len(r) < 4:
+            continue
+        idx.add((str(r[0]).strip(), str(r[2]).strip().lower(), str(r[3]).strip().lower()))
+
+    new_rows = []
+    for r in rows:
+        key = (str(r[0]).strip(), str(r[2]).strip().lower(), str(r[3]).strip().lower())
+        if key in idx:
+            continue
+        new_rows.append(r)
+
+    if new_rows:
+        sheets_call(ws.append_rows, new_rows, value_input_option="USER_ENTERED")
+        print(f"DBG WEEKLY_PAYOUTS appended rows={len(new_rows)}", flush=True)
+    else:
+        print("DBG WEEKLY_PAYOUTS no new rows (dedup)", flush=True)
 
 # ================================
 # Revert API (robust normalize)
@@ -590,36 +566,27 @@ def fetch_positions(safe: str, active: bool = True):
     url = f"{REVERT_API}/v1/positions/uniswapv3/account/{safe}"
     params = {"active": "true" if active else "false"}
 
-    retries = 5        # 最大5回試す
-    delay = 1          # 最初は1秒待つ
+    # optional: with-v4 (OFF by default to avoid instability)
+    if _env("WITH_V4", "0") == "1":
+        params["with-v4"] = "true"
+
+    retries = 5
+    delay = 1
 
     for attempt in range(retries):
         try:
             r = requests.get(url, params=params, timeout=30)
-
-            # サーバー側エラー（500系）は再試行
             if r.status_code >= 500:
                 raise Exception(f"Server {r.status_code}")
-
-            # それ以外のエラーもここで検知
             r.raise_for_status()
-
-            # 成功したらループを抜ける
-            break
-
+            return r.json()
         except Exception as e:
-            dbg("DBG retry", attempt + 1, "error=", e)
+            dbg("DBG fetch_positions retry", attempt + 1, "error=", e)
             time.sleep(delay)
-            delay *= 2   # 1→2→4→8→16秒と増やす
+            delay *= 2
 
-    else:
-        # 5回失敗したら空で返す（絶対に止めない）
-        dbg("DBG FINAL FAIL - returning empty")
-        return []
-
-    # 正常レスポンス処理
-    js = r.json()
-    return js
+    dbg("DBG FINAL FAIL - returning empty")
+    return []
 
 def _normalize_positions(resp) -> List[dict]:
     if isinstance(resp, list):
@@ -720,16 +687,10 @@ def get_revert_fee_apr(pos: dict) -> float:
 # Time (JST 00:00 close; send at 09:00)
 # ================================
 def get_period_end_jst(now: Optional[datetime] = None) -> datetime:
-    """
-    Daily end aligned to 00:00 JST.
-    """
     if now is None:
         now = datetime.now(JST)
     else:
-        if now.tzinfo is None:
-            now = now.replace(tzinfo=JST)
-        else:
-            now = now.astimezone(JST)
+        now = now.astimezone(JST) if now.tzinfo else now.replace(tzinfo=JST)
 
     anchor = now.replace(hour=0, minute=0, second=0, microsecond=0)
     if now < anchor:
@@ -737,17 +698,10 @@ def get_period_end_jst(now: Optional[datetime] = None) -> datetime:
     return anchor
 
 def get_weekly_period_end_jst(now: Optional[datetime] = None) -> datetime:
-    """
-    Weekly end aligned to Sunday 00:00 JST.
-    Returns most recent Sunday 00:00 JST.
-    """
     if now is None:
         now = datetime.now(JST)
     else:
-        if now.tzinfo is None:
-            now = now.replace(tzinfo=JST)
-        else:
-            now = now.astimezone(JST)
+        now = now.astimezone(JST) if now.tzinfo else now.replace(tzinfo=JST)
 
     # weekday: Mon=0 ... Sun=6
     days_since_sun = (now.weekday() - 6) % 7
@@ -761,7 +715,7 @@ def pick_mode_auto(now: Optional[datetime] = None) -> str:
     return "WEEKLY" if now.weekday() == 6 else "DAILY"
 
 def get_mode() -> str:
-    raw = (os.getenv("REPORT_MODE") or "").strip().upper()
+    raw = _env("REPORT_MODE", "").upper()
     if raw in ("DAILY", "WEEKLY"):
         return raw
     return pick_mode_auto()
@@ -802,7 +756,6 @@ def build_daily_message(
     mtd_weth: float,
     mtd_usdc: float,
 ) -> str:
-    # 現在DEX手数料（Value）＝ uncollected now
     uncollected_now_value = 0.0
     for p in (pos_open or []):
         try:
@@ -813,7 +766,6 @@ def build_daily_message(
         except Exception:
             pass
 
-    # APR（直近7日平均）＝ confirmed-only
     apr_7d = (avg_confirmed_7d_usd / net_total) * 365.0 * 100.0 if net_total > 0 else 0.0
 
     nft_lines = build_nft_lines_revert_apr(pos_open)
@@ -870,8 +822,6 @@ def build_weekly_message(
         wow_txt = f"{sign}{wow:.1f}%"
 
     safe_link = fmt_safe_link(safe_address)
-
-    # APR confirmed-only
     apr_7d = (avg_claimed_day / net_total) * 365.0 * 100.0 if net_total > 0 else 0.0
 
     nft_lines = build_nft_lines_revert_apr(pos_open)
@@ -910,28 +860,18 @@ def build_weekly_message(
 # config
 # ================================
 def load_config():
-    path = os.environ.get("CONFIG_PATH", "config.json")
+    path = _env("CONFIG_PATH", "config.json")
     with open(path, "r", encoding="utf-8") as f:
         return json.load(f)
 
 # ================================
-# Daily compute (Revert-only)
+# Daily compute
 # ================================
 def compute_daily_revert_metrics(
     safe_address: str,
     period_end: datetime,
 ) -> Tuple[List[dict], float, float, float, float, float, float]:
-    """
-    Daily (LIVE, REVERT-only)
-    Returns:
-      pos_open,
-      net_total,
-      uncollected_now_value,
-      avg_confirmed_7d_usd,
-      mtd_confirmed_usd,
-      mtd_weth,
-      mtd_usdc
-    """
+
     resp_open = fetch_positions(safe_address, active=True)
     resp_exited = fetch_positions(safe_address, active=False)
 
@@ -939,12 +879,10 @@ def compute_daily_revert_metrics(
     pos_exited = _normalize_positions(resp_exited)
     pos_all = (pos_open or []) + (pos_exited or [])
 
-    # net_total（openだけ）
     net_total = 0.0
     for pos in (pos_open or []):
         net_total += float(to_f(calc_net_usd(pos), 0.0) or 0.0)
 
-    # uncollected now（openの fees_value 合算）
     uncollected_now_value = 0.0
     for p in (pos_open or []):
         try:
@@ -955,7 +893,6 @@ def compute_daily_revert_metrics(
         except Exception:
             pass
 
-    # cash_flows all（nft_id補完つき）
     cash_flows_all: List[dict] = []
     for pos in (pos_all or []):
         pos_nft = str(pos.get("nft_id") or "").strip()
@@ -968,13 +905,11 @@ def compute_daily_revert_metrics(
                     cf["_pos_nft_id"] = pos_nft
             cash_flows_all.append(cf)
 
-    # 7d confirmed window（[end-7d, end)）
     start_7d = period_end - timedelta(days=7)
     rows_7d = pick_confirmed_cf(cash_flows_all, start_7d, period_end)
     confirmed_7d = float(sum((r.get("usd") or 0.0) for r in rows_7d))
     avg_confirmed_7d_usd = confirmed_7d / 7.0 if confirmed_7d > 0 else 0.0
 
-    # MTD confirmed window（[month_start, end)）
     pe = period_end.astimezone(JST)
     month_start = datetime(pe.year, pe.month, 1, 0, 0, 0, tzinfo=JST)
 
@@ -994,7 +929,7 @@ def compute_daily_revert_metrics(
     )
 
 # ================================
-# Weekly compute (confirmed-only + amounts)
+# Weekly compute
 # ================================
 def compute_weekly_confirmed_metrics(
     safe_address: str,
@@ -1007,17 +942,6 @@ def compute_weekly_confirmed_metrics(
     float, float,
     float, float
 ]:
-    """
-    Returns:
-      pos_open,
-      net_total,
-      confirmed_by_nft_7d (legacy map; may be empty),
-      week_total_usd, prev_week_total_usd,
-      mtd_confirmed_usd, all_confirmed_usd,
-      week_weth, week_usdc,
-      mtd_weth, mtd_usdc,
-      all_weth, all_usdc
-    """
     start_this = period_end - timedelta(days=7)
     end_this = period_end
     start_prev = period_end - timedelta(days=14)
@@ -1030,7 +954,6 @@ def compute_weekly_confirmed_metrics(
     pos_exited = _normalize_positions(resp_exited)
     pos_all = pos_open + pos_exited
 
-    # cash_flows all（まず集める）
     cash_flows_all: List[dict] = []
     for pos in (pos_all or []):
         pos_nft = str(pos.get("nft_id") or "").strip()
@@ -1043,14 +966,9 @@ def compute_weekly_confirmed_metrics(
                     cf["_pos_nft_id"] = pos_nft
             cash_flows_all.append(cf)
 
-    # net_total open-only
     net_total = 0.0
     for pos in (pos_open or []):
         net_total += float(to_f(calc_net_usd(pos), 0.0) or 0.0)
-
-    # 週合計（USD/WETH/USDC）
-    dbg("DBG cash_flows_all len", len(cash_flows_all))
-    dbg("DBG WEEK WINDOW start/end JST:", start_this, end_this)
 
     week_rows = pick_confirmed_cf(cash_flows_all, start_this, end_this)
     week_weth = float(sum(r.get("amount_weth", 0.0) for r in week_rows))
@@ -1060,20 +978,12 @@ def compute_weekly_confirmed_metrics(
     prev_rows = pick_confirmed_cf(cash_flows_all, start_prev, end_prev)
     prev_week_total = float(sum(r.get("usd", 0.0) for r in prev_rows))
 
-    print("DBG WEEK SUM",
-          "weth=", week_weth,
-          "usdc=", week_usdc,
-          "usd=", week_total,
-          flush=True)
-
-    # MTD / ALL
     month_start = datetime(
         period_end.astimezone(JST).year,
         period_end.astimezone(JST).month,
         1, 0, 0,
         tzinfo=JST
     )
-
     mtd_rows = pick_confirmed_cf(cash_flows_all, month_start, period_end)
     mtd_confirmed = float(sum((r.get("usd") or 0.0) for r in mtd_rows))
     mtd_weth = float(sum((r.get("amount_weth") or 0.0) for r in mtd_rows))
@@ -1085,10 +995,6 @@ def compute_weekly_confirmed_metrics(
     all_weth = float(sum((r.get("amount_weth") or 0.0) for r in all_rows))
     all_usdc = float(sum((r.get("amount_usdc") or 0.0) for r in all_rows))
 
-    dbg("DBG weekly confirmed this/prev:", week_total, prev_week_total)
-    dbg("DBG weekly mtd/all:", mtd_confirmed, all_confirmed)
-
-    # legacy map (optional / keep interface)
     confirmed_by_nft_7d: Dict[str, float] = {}
     for r in week_rows:
         nft = str(r.get("nft_id") or "").strip()
@@ -1113,9 +1019,81 @@ def compute_weekly_confirmed_metrics(
     )
 
 # ================================
+# Payout CSV
+# ================================
+def build_weekly_payout_rows_with_safe_remainder(
+    week_ending: datetime,
+    safe_name: str,
+    safe_address: str,
+    confirmed_usd_fix: float,
+    recipients: List[dict],
+) -> Tuple[List[List], float, float]:
+    """
+    recipients: [{recipient_id,name,address,pct(%)}]
+    pct is percent number (e.g. 70, 10)
+    Returns: rows(for CSV/sheet), pct_sum, remain_usd
+    """
+    pct_sum = round(sum(float(r.get("pct", 0.0) or 0.0) for r in recipients), 6)
+    payout_base = round(float(confirmed_usd_fix) * (pct_sum / 100.0), 2)
+    remain = round(float(confirmed_usd_fix) - payout_base, 2)
+
+    created_at = datetime.now(JST).strftime("%Y-%m-%d %H:%M")
+    week_key = week_ending.strftime("%Y-%m-%d %H:%M")
+
+    rows = []
+    for r in recipients:
+        pct = float(r.get("pct", 0.0) or 0.0)
+        amt = round(float(confirmed_usd_fix) * (pct / 100.0), 6)
+        rows.append([
+            week_key,
+            safe_name,
+            safe_address,
+            str(r.get("recipient_id") or ""),
+            str(r.get("name") or ""),
+            str(r.get("address") or ""),
+            pct,
+            amt,
+            created_at,
+        ])
+
+    # SAFE内残し（system分など）
+    if remain > 0:
+        rows.append([
+            week_key,
+            safe_name,
+            safe_address,
+            "SAFE_REMAINDER",
+            "SAFE_REMAINDER",
+            safe_address,
+            round(100.0 - pct_sum, 6),
+            round(remain, 6),
+            created_at,
+        ])
+
+    return rows, pct_sum, remain
+
+def write_csv(rows: List[List], path: str):
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w", newline="", encoding="utf-8") as f:
+        w = csv.writer(f)
+        w.writerow([
+            "week_ending",
+            "safe_name",
+            "safe_address",
+            "recipient_id",
+            "name",
+            "address",
+            "pct",
+            "amount_usdc",
+            "created_at_jst",
+        ])
+        for r in rows:
+            w.writerow(r)
+    return path
+
+# ================================
 # main
 # ================================
-print("DBG has append_weekly_log_row_once:", "append_weekly_log_row_once" in globals(), flush=True)
 def main():
     mode = get_mode()
     print(f"DBG MODE={mode}", flush=True)
@@ -1126,16 +1104,9 @@ def main():
         print("config.json: safes is empty", flush=True)
         return
 
-    # period_end（00:00〆）
-    if mode == "WEEKLY":
-        period_end = get_weekly_period_end_jst()
-    else:
-        period_end = get_period_end_jst()
-
+    period_end = get_weekly_period_end_jst() if mode == "WEEKLY" else get_period_end_jst()
     print("DBG period_end JST:", period_end.strftime("%Y-%m-%d %H:%M"), flush=True)
 
-    import time
-    
     for s in safes:
         safe_name = (s.get("name") or "NONAME").strip()
         safe_address = (s.get("safe_address") or "").strip()
@@ -1149,9 +1120,6 @@ def main():
             continue
 
         try:
-            # =========================
-            # WEEKLY (FIX)
-            # =========================
             if mode == "WEEKLY":
                 (
                     pos_open, net_total, _by_nft_7d,
@@ -1161,7 +1129,7 @@ def main():
                     mtd_weth, mtd_usdc,
                     all_weth, all_usdc,
                 ) = compute_weekly_confirmed_metrics(safe_address, period_end)
-        
+
                 msg = build_weekly_message(
                     safe_address=safe_address,
                     period_end=period_end,
@@ -1178,8 +1146,8 @@ def main():
                     all_usdc=all_usdc,
                     pos_open=pos_open,
                 )
-        
-                # ---- Sheets: WEEKLY_LOG ----
+
+                # Sheets: WEEKLY_LOG
                 client = get_gsheet_client()
                 sh = open_sheet(client)
                 ws_weekly_log = get_weekly_log_ws(sh)
@@ -1192,81 +1160,74 @@ def main():
                     confirmed_usdc=week_usdc,
                     confirmed_usd_fix=week_claimed,
                 )
-        
-                # ---- payout CSV ----
+
+                # Weekly message
+                send_telegram(msg, chat_id=chat_id)
+
+                # payout CSV (optional)
                 if _env("PAYOUT_CSV", "0") == "1":
                     recipients = load_active_recipients_for_safe(sh, safe_name=safe_name)
-        
-                    pct_sum = round(sum(float(r.get("pct", 0) or 0) for r in recipients), 6)
-                    payout_base_usd = round(float(week_claimed) * (pct_sum / 100.0), 2)
-                    remain_in_safe_usd = round(float(week_claimed) - payout_base_usd, 2)
-        
-                    payout_rows = build_weekly_payout_rows_usd2_owner_remainder(
-                        week_ending=period_end.date(),
+                    payout_rows, pct_sum, remain = build_weekly_payout_rows_with_safe_remainder(
+                        week_ending=period_end,
                         safe_name=safe_name,
                         safe_address=safe_address,
-                        week_confirmed_usd=payout_base_usd,
+                        confirmed_usd_fix=week_claimed,
                         recipients=recipients,
                     )
-        
+
                     csv_name = f"payout_{safe_name}_{period_end.strftime('%Y-%m-%d')}.csv"
                     csv_path = write_csv(payout_rows, f"/tmp/{csv_name}")
-        
-                    print(f"DBG PAYOUT CSV: {csv_path} remain_in_safe_usd={remain_in_safe_usd} pct_sum={pct_sum}")
-        
+                    print(f"DBG PAYOUT CSV: {csv_path} pct_sum={pct_sum} remain={remain}", flush=True)
+
+                    # Optional: write to WEEKLY_PAYOUTS sheet
+                    if _env("PAYOUTS_TO_SHEET", "0") == "1":
+                        ws_payouts = get_weekly_payouts_ws(sh)
+                        append_weekly_payout_rows_once(ws_payouts, payout_rows, period_end, safe_address)
+
                     send_telegram(
-                        f"✅ Payout CSV prepared\n"
-                        f"- {csv_name}\n"
-                        f"- confirmed(FIX): ${round(float(week_claimed),2):,.2f}\n"
-                        f"- payout_base({pct_sum}%): ${payout_base_usd:,.2f}\n"
-                        f"- remain_in_safe: ${remain_in_safe_usd:,.2f}",
+                        "✅ Payout prepared\n"
+                        f"- week_end: {h(period_end.strftime('%Y-%m-%d %H:%M'))} JST\n"
+                        f"- csv: {h(csv_name)} (saved on server)\n"
+                        f"- confirmed(FIX): {h(fmt_money(week_claimed))}\n"
+                        f"- payout_pct_sum: {h(pct_sum)}%\n"
+                        f"- remain_in_safe: {h(fmt_money(remain))}\n"
+                        f"- recipients: {h(len(recipients))}",
                         chat_id=chat_id,
                     )
-        
-            # ここに「通常の週次msg送信」があるなら置く
-            # send_telegram(msg, chat_id=chat_id)
-        
+
+            else:
+                (
+                    pos_open,
+                    net_total,
+                    _uncol_now_value,
+                    avg_confirmed_7d_usd,
+                    mtd_confirmed_usd,
+                    mtd_weth,
+                    mtd_usdc,
+                ) = compute_daily_revert_metrics(safe_address, period_end)
+
+                msg = build_daily_message(
+                    safe_address=safe_address,
+                    period_end=period_end,
+                    net_total=net_total,
+                    pos_open=pos_open,
+                    avg_confirmed_7d_usd=avg_confirmed_7d_usd,
+                    mtd_confirmed_usd=mtd_confirmed_usd,
+                    mtd_weth=mtd_weth,
+                    mtd_usdc=mtd_usdc,
+                )
+                send_telegram(msg, chat_id=chat_id)
+
         except Exception as e:
-            # ここは既存の例外通知ロジックに合わせてOK
-            err = f"ERROR: {safe_name}\nSAFE {safe_address}\n{type(e).__name__}: {e}"
+            err = (
+                "CBC LM ERROR\n\n"
+                f"NAME\n{h(safe_name)}\n\n"
+                f"SAFE\n{h(safe_address)}\n\n"
+                f"ERROR\n{h(type(e).__name__)}: {h(e)}"
+            )
             print(err, flush=True)
             try:
                 send_telegram(err, chat_id=chat_id)
-            except Exception:
-                pass
-
-            # ================================
-            # DAILY (LIVE, REVERT-only)
-            # ================================
-            (
-                pos_open,
-                net_total,
-                _uncol_now_value,
-                avg_confirmed_7d_usd,
-                mtd_confirmed_usd,
-                mtd_weth,
-                mtd_usdc,
-            ) = compute_daily_revert_metrics(safe_address, period_end)
-
-            msg = build_daily_message(
-                safe_address=safe_address,
-                period_end=period_end,
-                net_total=net_total,
-                pos_open=pos_open,
-                avg_confirmed_7d_usd=avg_confirmed_7d_usd,
-                mtd_confirmed_usd=mtd_confirmed_usd,
-                mtd_weth=mtd_weth,
-                mtd_usdc=mtd_usdc,
-            )
-            send_telegram(msg, chat_id)
-
-        except Exception as e:
-            print(f"error name={safe_name} safe={safe_address}: {e}", flush=True)
-            try:
-                send_telegram(
-                    f"CBC LM ERROR\n\nNAME\n{h(safe_name)}\n\nSAFE\n{h(safe_address)}\n\nERROR\n{h(e)}",
-                    chat_id,
-                )
             except Exception:
                 pass
             time.sleep(1)
