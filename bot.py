@@ -1356,15 +1356,15 @@ def main():
                             f"- payout_pct_sum: {pct_sum:.1f}%\n"
                             f"- remain_in_safe: {fmt_money(remain)}"
                         )
-                    
-                        if csv_hub_chat_id:
-                            send_telegram_file(part_path, chat_id=csv_hub_chat_id, caption=part_caption)
-                            print(f"DBG HUB CSV SENT: {safe_name} part{idx}", flush=True)
                         
-                    else:
-                        print("DBG HUB CSV SKIP: CSV_HUB_CHAT_ID is empty", flush=True)
-                except Exception as e:
-                    print(f"DBG HUB CSV FAILED: {e}", flush=True)
+                        try:
+                            if csv_hub_chat_id:
+                                send_telegram_file(part_path, chat_id=csv_hub_chat_id, caption=part_caption)
+                                print(f"DBG HUB CSV SENT: {safe_name} part{idx}", flush=True)
+                            else:
+                                print("DBG HUB CSV SKIP: CSV_HUB_CHAT_ID is empty", flush=True)
+                        except Exception as e:
+                            print(f"DBG HUB CSV SENT: {safe_name} part{}", flush=True)
                 
                 # ✅ SAFEグループへはCSVも通知も一切送らない（完全OFF）
                 # send_telegram_file(csv_path, chat_id=chat_id, caption=caption)
