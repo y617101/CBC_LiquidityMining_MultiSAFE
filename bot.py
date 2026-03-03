@@ -1310,6 +1310,9 @@ def main():
 
     csv_hub_chat_id = _env("CSV_HUB_CHAT_ID", "@csvhub")  # ← ここで集約先をENV化
 
+            # ---- aggregate (all safes) ----
+        all_payout_rows = []      # 送金用の元データ（あなたの既存payout_rows形式）
+        all_report_rows = []      # レポート用（必要なら）
     for s in safes:
         safe_name = (s.get("name") or "NONAME").strip()
         safe_address = (s.get("safe_address") or "").strip()
