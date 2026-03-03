@@ -4,6 +4,7 @@ import html
 import time
 import csv
 import requests
+import math
 
 print("DBG BOOT MARKER: 2026-02-24-AAAA", flush=True)
 
@@ -1260,7 +1261,12 @@ def build_safe_airdrop_csv_rows(
         if rid.upper() == "SAFE_REMAINDER":
             continue
 
-        amt = float(r[AMT_IDX] or 0.0)
+        amt_raw = float(r[AMTIDX] or 0.0)
+        if amt_raw <= 0:
+            continue
+        
+        # 🔽 小数点2桁で切り捨て
+        amt = math.floor(amt_raw * 100) / 100
         if amt <= 0:
             continue
 
@@ -1276,7 +1282,7 @@ def build_safe_airdrop_csv_rows(
             "erc20",
             token_addr,
             receiver,
-            f"{amt:.6f}".rstrip("0").rstrip("."),  # 余計な0を削る（見た目きれい）
+            f"{amt:.2f}",
             row_id,
         ])
 
