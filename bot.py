@@ -395,9 +395,41 @@ def sheets_call(fn, *args, **kwargs):
 def get_gsheet_client():
     creds = Credentials.from_service_account_file(
         "gcp_service_account.json",
-        scopes=["https://www.googleapis.com/auth/spreadsheets"],
-    )
+        scopes=[
+            "https://www.googleapis.com/auth/spreadsheets",
+            "https://www.googleapis.com/auth/drive",
+        ],
     return gspread.authorize(creds)
+
+def get_drive_service():
+    creds = Credentials.from_service_account_file(
+        "gcp_service_account.json",
+        scopes=[
+            "https://www.googleapis.com/auth/spreadsheets",
+            "https://www.googleapis.com/auth/drive",
+        ],
+    )
+    return build("drive", "v3", credentials=creds)
+
+def upload_csv_to_drive(csv_path: str, folder_id: str) -> str:
+    drive = get_drive_service()
+
+    file_metadata = {
+        "name": os.path.basename(csv_path),
+        "parents": [folder_id],
+    }
+
+    media = MediaFileUpload(csv_path, mimetype="text/csv")
+
+    created = drive.files().create(
+        body=file_metadata,
+        media_body=media,
+        fields="id, webViewLink",
+    ).execute()
+
+    file_id = created.get("id")
+
+    return f"https://drive.google.com/file/d/{file_id}/view"
 
 def open_sheet(client):
     sheet_id = _env("GOOGLE_SHEET_ID", "")
@@ -1304,6 +1336,15 @@ def main():
                         continue
 
                     csv_path = write_csv(transfer_rows, f"/tmp/{csv_name}")
+
+                    # Drive upload (optional) + URL notify
+                    try:
+                        folder_id = _env("DRIVE_FOLDER_ID", "")
+                        if folder_id:
+                            url = upload_csv_to_drive(csv_path, folder_id)
+                            send_telegram(f"📂 CSV (Drive)\n{url}", chat_id=csv_hub_chat_id or chat_id)
+                    except Exception as e:
+                    print(f"DBG drive upload failed: {e}", flush=True)
                     print(f"DBG PAYOUT CSV: {csv_path} pct_sum={pct_sum} remain={remain}", flush=True)
 
                     caption = (
