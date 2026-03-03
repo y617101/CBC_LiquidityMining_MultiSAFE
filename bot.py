@@ -1227,6 +1227,71 @@ def write_csv(rows: List[List], path: str):
             w.writerow(r)
     return path
 
+def build_safe_airdrop_csv_rows(
+    payout_rows_all_safes: List[List],
+    usdc_token_addr: str,
+) -> List[List]:
+    """
+    Safe Apps -> CSV Airdrop format:
+    token_type,token_address,receiver,amount,id
+    """
+    token_addr = (usdc_token_addr or "").strip().lower()
+    rows = []
+    seq = 1
+
+    # payout_rows の列順（あなたの write_csv ヘッダに合わせる）
+    # [week_ending, safe_name, safe_address, recipient_id, name, address, pct, amount_usdc, created_at_jst]
+    ADDR_IDX = 5
+    AMT_IDX  = 7
+    RID_IDX  = 3
+    SAFE_NAME_IDX = 1
+    SAFE_ADDR_IDX = 2
+
+    for r in (payout_rows_all_safes or []):
+        if not isinstance(r, list) or len(r) <= AMT_IDX:
+            continue
+
+        receiver = str(r[ADDR_IDX] or "").strip()
+        if not receiver:
+            continue
+
+        # SAFE_REMAINDER は除外（Safeに残すやつ）
+        rid = str(r[RID_IDX] or "").strip()
+        if rid.upper() == "SAFE_REMAINDER":
+            continue
+
+        amt = float(r[AMT_IDX] or 0.0)
+        if amt <= 0:
+            continue
+
+        safe_name = str(r[SAFE_NAME_IDX] or "").strip()
+        safe_addr = str(r[SAFE_ADDR_IDX] or "").strip()
+
+        # id はユニークならOK（Safe側で重複チェック用）
+        # 例: CBC_001|0xb5B9...|owner|1
+        row_id = f"{safe_name}|{safe_addr}|{rid}|{seq}"
+        seq += 1
+
+        rows.append([
+            "erc20",
+            token_addr,
+            receiver,
+            f"{amt:.6f}".rstrip("0").rstrip("."),  # 余計な0を削る（見た目きれい）
+            row_id,
+        ])
+
+    return rows
+
+
+def write_airdrop_csv(rows: List[List], path: str) -> str:
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w", newline="", encoding="utf-8") as f:
+        w = csv.writer(f)
+        w.writerow(["token_type", "token_address", "receiver", "amount", "id"])
+        for r in rows:
+            w.writerow(r)
+    return path
+
 # ================================
 # main
 # ================================
