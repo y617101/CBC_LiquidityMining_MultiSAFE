@@ -1275,7 +1275,7 @@ def build_safe_airdrop_csv_rows(
 
         # id はユニークならOK（Safe側で重複チェック用）
         # 例: CBC_001|0xb5B9...|owner|1
-        row_id = f"{safe_name}|{safe_addr}|{rid}|{seq}"
+        row_id = rid
         seq += 1
 
         rows.append([
