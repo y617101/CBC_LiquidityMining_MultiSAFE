@@ -1153,6 +1153,10 @@ def compute_weekly_confirmed_metrics(
 # ================================
 # Payout CSV
 # ================================
+def chunk_rows(rows: List[List], chunk_size: int = 200):
+    for i in range(0, len(rows), chunk_size):
+        yield rows[i:i + chunk_size]
+        
 def build_weekly_payout_rows_with_safe_remainder(
     week_ending: datetime,
     safe_name: str,
@@ -1336,34 +1340,27 @@ def main():
                         )
                         continue
 
-                    csv_path = write_csv(transfer_rows, f"/tmp/{csv_name}")
+                    parts = list(chunk_rows(transfer_rows, 200))
 
-                    # Drive upload (optional) + URL notify
-                    try:
-                        folder_id = _env("DRIVE_FOLDER_ID", "")
-                        if folder_id:
-                            url = upload_csv_to_drive(csv_path, folder_id)
-                            send_telegram(f"📂 CSV (Drive)\n{url}", chat_id=csv_hub_chat_id or chat_id)
-                    except Exception as e:
-                        print(f"DBG drive upload failed: {e}", flush=True)
+                    print(f"DBG PAYOUT SPLIT: total_rows={len(transfer_rows)} parts={len(parts)}", flush=True)
+                    
+                    for idx, part_rows in enumerate(parts, 1):
+                        part_name = f"payout_{safe_name}_{period_end.strftime('%Y-%m-%d')}_part{idx}.csv"
+                        part_path = write_csv(part_rows, f"/tmp/{part_name}")
+                    
+                        part_caption = (
+                            f"📦 {safe_name} payout (part {idx}/{len(parts)})\n"
+                            f"- week_end: {period_end.strftime('%Y-%m-%d %H:%M')} JST\n"
+                            f"- rows: {len(part_rows)}\n"
+                            f"- confirmed(FIX): {fmt_money(week_claimed)}\n"
+                            f"- payout_pct_sum: {pct_sum:.1f}%\n"
+                            f"- remain_in_safe: {fmt_money(remain)}"
+                        )
+                    
+                        if csv_hub_chat_id:
+                            send_telegram_file(part_path, chat_id=csv_hub_chat_id, caption=part_caption)
+                            print(f"DBG HUB CSV SENT: {safe_name} part{idx}", flush=True)
                         
-                    print(f"DBG PAYOUT CSV: {csv_path} pct_sum={pct_sum} remain={remain}", flush=True)
-
-                    caption = (
-                        f"📦 {safe_name} payout\n"
-                        "✅ Payout prepared\n"
-                        f"- week_end: {period_end.strftime('%Y-%m-%d %H:%M')} JST\n"
-                        f"- confirmed(FIX): {fmt_money(week_claimed)}\n"
-                        f"- payout_pct_sum: {pct_sum:.1f}%\n"
-                        f"- remain_in_safe: {fmt_money(remain)}\n"
-                        f"- recipients(active): {len(recipients)}"
-                    )
-
-               # 集約グループへ（ENV優先）: CSVはCSVHUBだけに送る
-                try:
-                    if csv_hub_chat_id:
-                        send_telegram_file(csv_path, chat_id=csv_hub_chat_id, caption=caption)
-                        print(f"DBG HUB CSV SENT: {safe_name}", flush=True)
                     else:
                         print("DBG HUB CSV SKIP: CSV_HUB_CHAT_ID is empty", flush=True)
                 except Exception as e:
