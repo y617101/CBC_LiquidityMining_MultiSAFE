@@ -1261,7 +1261,7 @@ def build_safe_airdrop_csv_rows(
         if rid.upper() == "SAFE_REMAINDER":
             continue
 
-        amt_raw = float(r[AMTIDX] or 0.0)
+        amt_raw = float(r[AMT_IDX] or 0.0)
         if amt_raw <= 0:
             continue
         
