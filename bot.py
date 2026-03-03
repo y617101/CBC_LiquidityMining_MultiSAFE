@@ -1345,7 +1345,8 @@ def main():
                             url = upload_csv_to_drive(csv_path, folder_id)
                             send_telegram(f"📂 CSV (Drive)\n{url}", chat_id=csv_hub_chat_id or chat_id)
                     except Exception as e:
-                    print(f"DBG drive upload failed: {e}", flush=True)
+                        print(f"DBG drive upload failed: {e}", flush=True)
+                        
                     print(f"DBG PAYOUT CSV: {csv_path} pct_sum={pct_sum} remain={remain}", flush=True)
 
                     caption = (
