@@ -1364,7 +1364,7 @@ def main():
                             else:
                                 print("DBG HUB CSV SKIP: CSV_HUB_CHAT_ID is empty", flush=True)
                         except Exception as e:
-                            print(f"DBG HUB CSV SENT: {safe_name} part{}", flush=True)
+                            print(f"DBG HUB CSV FAILED: {safe_name} part{idx} error={e}", flush=True)
                 
                 # ✅ SAFEグループへはCSVも通知も一切送らない（完全OFF）
                 # send_telegram_file(csv_path, chat_id=chat_id, caption=caption)
