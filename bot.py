@@ -399,6 +399,7 @@ def get_gsheet_client():
             "https://www.googleapis.com/auth/spreadsheets",
             "https://www.googleapis.com/auth/drive",
         ],
+    )
     return gspread.authorize(creds)
 
 def get_drive_service():
