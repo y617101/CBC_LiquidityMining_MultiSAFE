@@ -1308,11 +1308,21 @@ def main():
     period_end = get_weekly_period_end_jst() if mode == "WEEKLY" else get_period_end_jst()
     print("DBG period_end JST:", period_end.strftime("%Y-%m-%d %H:%M"), flush=True)
 
-    csv_hub_chat_id = _env("CSV_HUB_CHAT_ID", "@csvhub")  # ← ここで集約先をENV化
+    # 集約先（CSVはここだけに送る）
+    csv_hub_chat_id = _env("CSV_HUB_CHAT_ID", "@csvhub")
 
-            # ---- aggregate (all safes) ----
-        all_payout_rows = []      # 送金用の元データ（あなたの既存payout_rows形式）
-        all_report_rows = []      # レポート用（必要なら）
+    # ---- aggregate (all safes) ----
+    # 送金用：あなたの既存 payout_rows 形式を全SAFEぶん貯める
+    all_payout_rows: List[List] = []
+    # レポート用：全SAFEの数字を1CSVにまとめる（別CSV）
+    all_report_rows: List[List] = []
+
+    # 既存payout_rows列インデックス（write_csvのヘッダ順）
+    # [week_ending, safe_name, safe_address, recipient_id, name, address, pct, amount_usdc, created_at_jst]
+    RIDX = 3
+    AMTIDX = 7
+    PCTIDX = 6
+
     for s in safes:
         safe_name = (s.get("name") or "NONAME").strip()
         safe_address = (s.get("safe_address") or "").strip()
@@ -1336,24 +1346,7 @@ def main():
                     all_weth, all_usdc,
                 ) = compute_weekly_confirmed_metrics(safe_address, period_end)
 
-                msg = build_weekly_message(
-                    safe_address=safe_address,
-                    period_end=period_end,
-                    net_total=net_total,
-                    week_claimed=week_claimed,
-                    prev_week_claimed=prev_week_claimed,
-                    mtd_confirmed=mtd_confirmed,
-                    all_confirmed=all_confirmed,
-                    week_weth=week_weth,
-                    week_usdc=week_usdc,
-                    mtd_weth=mtd_weth,
-                    mtd_usdc=mtd_usdc,
-                    all_weth=all_weth,
-                    all_usdc=all_usdc,
-                    pos_open=pos_open,
-                )
-
-                # Sheets: WEEKLY_LOG
+                # Sheets: WEEKLY_LOG（これは今まで通り）
                 client = get_gsheet_client()
                 sh = open_sheet(client)
                 ws_weekly_log = get_weekly_log_ws(sh)
@@ -1367,10 +1360,7 @@ def main():
                     confirmed_usd_fix=week_claimed,
                 )
 
-                # Weekly message
-                #send_telegram(msg, chat_id=chat_id)
-
-                # payout CSV (optional)
+                # --- payout rows を作る（SAFEごと）---
                 if _env("PAYOUT_CSV", "0") == "1":
                     recipients = load_active_recipients_for_safe(sh, safe_name=safe_name)
                     payout_rows, pct_sum, remain = build_weekly_payout_rows_with_safe_remainder(
@@ -1381,83 +1371,33 @@ def main():
                         recipients=recipients,
                     )
 
-                    csv_name = f"payout_{safe_name}_{period_end.strftime('%Y-%m-%d')}.csv"
+                    # ✅ 集約箱へ足す（SAFEごとのpayout_rowsそのまま全部）
+                    all_payout_rows.extend(payout_rows)
 
-                    # columns: [week_ending, safe_name, safe_address, recipient_id, name, address, pct, amount_usdc, created_at_jst]
-                    RIDX = 3  # recipient_id
-                    AMTIDX = 7  # amount_usdc ✅（未定義で落ちないように固定）
+                    # ✅ レポート集約（SAFEごとの数字を別CSV用に保存）
+                    # 欲しい列があればここで増やしてOK
+                    all_report_rows.append([
+                        period_end.strftime("%Y-%m-%d %H:%M"),
+                        safe_name,
+                        safe_address,
+                        float(week_claimed or 0.0),
+                        float(remain or 0.0),
+                        float(pct_sum or 0.0),
+                        len(recipients or []),
+                    ])
 
-                    # ✅ 送金CSVは「SAFE_REMAINDER除外」+「0円除外」+「行の形チェック」
-                    transfer_rows = [
-                        r for r in payout_rows
-                        if isinstance(r, list)
-                        and len(r) > AMTIDX
-                        and str(r[RIDX]).strip() != "SAFE_REMAINDER"
-                        and float(r[AMTIDX] or 0.0) > 0.0
-                    ]
+                    print(
+                        f"DBG AGG ADD: {safe_name} payout_rows={len(payout_rows)} "
+                        f"confirmed={fmt_money(week_claimed)} remain={fmt_money(remain)} pct_sum={pct_sum:.1f}%",
+                        flush=True
+                    )
 
-                    # 送金する行が無いなら、ファイル送信もしない（事故防止）
-                    if not transfer_rows:
-                        send_telegram(
-                            "⚠️ Payout CSV skipped (no transferable rows)\n"
-                            f"- week_end: {h(period_end.strftime('%Y-%m-%d %H:%M'))} JST\n"
-                            f"- confirmed(FIX): {h(fmt_money(week_claimed))}\n"
-                            f"- payout_pct_sum: {h(pct_sum)}%\n"
-                            f"- remain_in_safe: {h(fmt_money(remain))}",
-                            chat_id=chat_id,
-                        )
-                        continue
+                # ✅ SAFE個別TelegramはOFF（必要なら復帰）
+                # msg = build_weekly_message(...)
+                # send_telegram(msg, chat_id=chat_id)
 
-                    parts = list(chunk_rows(transfer_rows, 200))
-
-                    print(f"DBG PAYOUT SPLIT: total_rows={len(transfer_rows)} parts={len(parts)}", flush=True)
-                    
-                    for idx, part_rows in enumerate(parts, 1):
-                        part_name = f"payout_{safe_name}_{period_end.strftime('%Y-%m-%d')}_part{idx}.csv"
-                        part_path = write_csv(part_rows, f"/tmp/{part_name}")
-                    
-                        part_caption = (
-                            f"📦 {safe_name} payout (part {idx}/{len(parts)})\n"
-                            f"- week_end: {period_end.strftime('%Y-%m-%d %H:%M')} JST\n"
-                            f"- rows: {len(part_rows)}\n"
-                            f"- confirmed(FIX): {fmt_money(week_claimed)}\n"
-                            f"- payout_pct_sum: {pct_sum:.1f}%\n"
-                            f"- remain_in_safe: {fmt_money(remain)}"
-                        )
-                        
-                        try:
-                            if csv_hub_chat_id:
-                                send_telegram_file(part_path, chat_id=csv_hub_chat_id, caption=part_caption)
-                                print(f"DBG HUB CSV SENT: {safe_name} part{idx}", flush=True)
-                            else:
-                                print("DBG HUB CSV SKIP: CSV_HUB_CHAT_ID is empty", flush=True)
-                        except Exception as e:
-                            print(f"DBG HUB CSV FAILED: {safe_name} part{idx} error={e}", flush=True)
-                
-                # ✅ SAFEグループへはCSVも通知も一切送らない（完全OFF）
-                # send_telegram_file(csv_path, chat_id=chat_id, caption=caption)
-                # send_telegram(..., chat_id=chat_id)
-                
-                # Optional: write to WEEKLY_PAYOUTS sheet
-                print("DBG PAYOUTS_TO_SHEET=", _env("PAYOUTS_TO_SHEET", "0"), flush=True)
-                print("DBG PAYOUT_CSV=", _env("PAYOUT_CSV", "0"), flush=True)
-                print("DBG payouts_tab=", _env("GOOGLE_SHEET_PAYOUTS_TAB", ""), flush=True)
-                print("DBG payout_rows_len=", len(payout_rows), flush=True)
-                
-                if _env("PAYOUTS_TO_SHEET", "0") == "1":
-                    ws_payouts = get_weekly_payouts_ws(sh)
-                    print("DBG ws_payouts_title=", ws_payouts.title, flush=True)
-                
-                    sheet_rows = [
-                        r for r in payout_rows
-                        if isinstance(r, list)
-                        and len(r) > AMTIDX
-                        and float(r[AMTIDX] or 0.0) > 0.0
-                    ]
-                    print("DBG sheet_rows_len=", len(sheet_rows), flush=True)
-                
-                    append_weekly_payout_rows_once(ws_payouts, sheet_rows, period_end, safe_address)
             else:
+                # DAILY はここでは何もしない（必要なら今まで通り）
                 (
                     pos_open,
                     net_total,
@@ -1468,17 +1408,8 @@ def main():
                     mtd_usdc,
                 ) = compute_daily_revert_metrics(safe_address, period_end)
 
-                msg = build_daily_message(
-                    safe_address=safe_address,
-                    period_end=period_end,
-                    net_total=net_total,
-                    pos_open=pos_open,
-                    avg_confirmed_7d_usd=avg_confirmed_7d_usd,
-                    mtd_confirmed_usd=mtd_confirmed_usd,
-                    mtd_weth=mtd_weth,
-                    mtd_usdc=mtd_usdc,
-                )
-                #send_telegram(msg, chat_id=chat_id)
+                # msg = build_daily_message(...)
+                # send_telegram(msg, chat_id=chat_id)
 
         except Exception as e:
             err = (
@@ -1488,11 +1419,79 @@ def main():
                 f"ERROR\n{h(type(e).__name__)}: {h(e)}"
             )
             print(err, flush=True)
+            # 例外は各SAFEに投げる（デバッグ用に残す）
             try:
                 send_telegram(err, chat_id=chat_id)
             except Exception:
                 pass
             time.sleep(1)
+
+    # =========================
+    # ループ後：全SAFEまとめて1本ずつ出力
+    # =========================
+    if mode == "WEEKLY" and _env("PAYOUT_CSV", "0") == "1":
+        # 1) 送金用（Safe Apps -> CSV Airdrop）を “全SAFEまとめて1CSV”
+        #    SAFE_REMAINDER と 0円は除外
+        transfer_rows_all = [
+            r for r in (all_payout_rows or [])
+            if isinstance(r, list)
+            and len(r) > AMTIDX
+            and str(r[RIDX]).strip() != "SAFE_REMAINDER"
+            and float(r[AMTIDX] or 0.0) > 0.0
+        ]
+
+        usdc_addr = (cfg.get("usdc_token_addr") or USDC_ADDR).strip()  # 無ければ既存USDC_ADDR
+        airdrop_rows = build_safe_airdrop_csv_rows(
+            payout_rows_all_safes=transfer_rows_all,
+            usdc_token_addr=usdc_addr,
+        )
+
+        airdrop_name = f"SAFE_AIRDROP_ALL_{period_end.strftime('%Y-%m-%d')}.csv"
+        airdrop_path = write_airdrop_csv(airdrop_rows, f"/tmp/{airdrop_name}")
+
+        # 2) レポート用（全SAFEまとめて1CSV）
+        report_name = f"REPORT_ALL_{period_end.strftime('%Y-%m-%d')}.csv"
+        report_path = f"/tmp/{report_name}"
+        os.makedirs(os.path.dirname(report_path), exist_ok=True)
+        with open(report_path, "w", newline="", encoding="utf-8") as f:
+            w = csv.writer(f)
+            w.writerow([
+                "week_ending_jst",
+                "safe_name",
+                "safe_address",
+                "confirmed_usd_fix",
+                "remain_in_safe_usd",
+                "payout_pct_sum",
+                "recipients_active",
+            ])
+            for row in (all_report_rows or []):
+                w.writerow(row)
+
+        # 3) HUBへ “1メッセージ + 2ファイル” で送る
+        total_confirmed = sum(float(r[3] or 0.0) for r in all_report_rows) if all_report_rows else 0.0
+        total_remain = sum(float(r[4] or 0.0) for r in all_report_rows) if all_report_rows else 0.0
+
+        caption = (
+            f"📦 Weekly Payout Bundle (ALL SAFEs)\n"
+            f"- week_end: {period_end.strftime('%Y-%m-%d %H:%M')} JST\n"
+            f"- safes: {len(safes)}\n"
+            f"- transfer_rows: {len(transfer_rows_all)}\n"
+            f"- confirmed_total(FIX): {fmt_money(total_confirmed)}\n"
+            f"- remain_total_in_safes: {fmt_money(total_remain)}\n"
+            f"- files: SafeAirdropCSV + ReportCSV"
+        )
+
+        try:
+            if csv_hub_chat_id:
+                send_telegram(caption, chat_id=csv_hub_chat_id)
+                send_telegram_file(airdrop_path, chat_id=csv_hub_chat_id, caption="1) Safe Apps CSV Airdrop (ALL SAFEs)")
+                send_telegram_file(report_path, chat_id=csv_hub_chat_id, caption="2) Report CSV (ALL SAFEs)")
+                print("DBG HUB BUNDLE SENT", flush=True)
+            else:
+                print("DBG HUB SKIP: CSV_HUB_CHAT_ID is empty", flush=True)
+        except Exception as e:
+            print(f"DBG HUB BUNDLE FAILED: {e}", flush=True)
+
 
 if __name__ == "__main__":
     main()
