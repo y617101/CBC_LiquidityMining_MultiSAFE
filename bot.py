@@ -1376,6 +1376,14 @@ def main():
                         confirmed_usd_fix=week_claimed,
                         recipients=recipients,
                     )
+                                        # ---- WEEKLY_PAYOUTS sheet write ----
+                    ws_payouts = get_weekly_payouts_ws(sh)
+                    append_weekly_payout_rows_once(
+                        ws_payouts,
+                        payout_rows,
+                        period_end,
+                        safe_address,
+                    )
 
                     # ✅ 集約箱へ足す（SAFEごとのpayout_rowsそのまま全部）
                     all_payout_rows.extend(payout_rows)
