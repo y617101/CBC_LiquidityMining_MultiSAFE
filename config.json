@@ -14,16 +14,6 @@
       "name": "CBC_003",
       "safe_address": "0x8B8a1ad5F23d9E6F0D7C977Bd1C8288cB67b86c5",
       "telegram_chat_id": "@cbctest003"
-    },
-    {
-      "name": "CBC_005",
-      "safe_address": "0x4aBd681b3301af318e573A4dA2E74ad1f4be6299",
-      "telegram_chat_id": "@cbclm005"
-    },
-    {
-      "name": "CBC_007",
-      "safe_address": "0xa70dE68823F8f06e3dcCaDA3A71F7Ae2Efe944a4",
-      "telegram_chat_id": "@cbclm007"
     }
   ]
 }
