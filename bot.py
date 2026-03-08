@@ -1419,22 +1419,22 @@ def main():
 
     for s in safes:
 
-    # --- ENABLE CHECK ---
-    if not s.get("enabled", True):
-        print(f"skip disabled safe: {s.get('name')}", flush=True)
-        continue
-
-    safe_name = (s.get("name") or "NONAME").strip()
-    safe_address = (s.get("safe_address") or "").strip()
-    chat_id = (s.get("telegram_chat_id") or "").strip()
-
-    if not safe_address:
-        print(f"skip: missing safe_address name={safe_name}", flush=True)
-        continue
-
-    if not chat_id:
-        print(f"skip: missing telegram_chat_id name={safe_name}", flush=True)
-        continue
+        # --- ENABLE CHECK ---
+        if not s.get("enabled", True):
+            print(f"skip disabled safe: {s.get('name')}", flush=True)
+            continue
+    
+        safe_name = (s.get("name") or "NONAME").strip()
+        safe_address = (s.get("safe_address") or "").strip()
+        chat_id = (s.get("telegram_chat_id") or "").strip()
+    
+        if not safe_address:
+            print(f"skip: missing safe_address name={safe_name}", flush=True)
+            continue
+    
+        if not chat_id:
+            print(f"skip: missing telegram_chat_id name={safe_name}", flush=True)
+            continue
 
         try:
             # ================================
