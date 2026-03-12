@@ -2,37 +2,37 @@
   "safes": [
     {
       "name": "CBC_001",
-      "enabled": false,
+      "enabled": true,
       "safe_address": "0xb5B95473C08D0046DD8CE1A6D28258E82095f9AF",
       "telegram_chat_id": "@cbclm001"
     },
     {
       "name": "CBC_002",
-      "enabled": false,
+      "enabled": true,
       "safe_address": "0xB1A76A21769a90Ce4fE0edC3DBBae0b9E7689734",
       "telegram_chat_id": "@cbclm002"
     },
     {
       "name": "CBC_003",
-      "enabled": false,
+      "enabled": true,
       "safe_address": "0x8B8a1ad5F23d9E6F0D7C977Bd1C8288cB67b86c5",
       "telegram_chat_id": "@cbclm003"
     },
     {
       "name": "CBC_004",
-      "enabled": false,
+      "enabled": true,
       "safe_address": "0xB367E031aa1a39ff827337aAd08076cC31020aAC",
       "telegram_chat_id": "@cbclm004"
     },
     {
       "name": "CBC_005",
-      "enabled": false,
+      "enabled": true,
       "safe_address": "0x4aBd681b3301af318e573A4dA2E74ad1f4be6299",
       "telegram_chat_id": "@cbclm005"
     },
     {
       "name": "CBC_007",
-      "enabled": false,
+      "enabled": true,
       "safe_address": "0xa70dE68823F8f06e3dcCaDA3A71F7Ae2Efe944a4",
       "telegram_chat_id": "@cbclm007"
     },
